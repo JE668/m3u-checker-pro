@@ -16,6 +16,7 @@
         .link-item { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
         .link-item input { flex: 1; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 8px; }
         .back-btn { margin-bottom: 20px; }
+        .log-modal-content { background: #1e1e1e; color: #d4d4d4; font-family: 'Fira Code', monospace; font-size: 12px; padding: 20px; border-radius: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
     </style>
 </head>
 <body>
@@ -39,6 +40,7 @@
                         <th>包含订阅</th>
                         <th>最后更新</th>
                         <th>链接</th>
+                        <th>日志</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -95,10 +97,26 @@
         </div>
     </div>
 
+    <!-- 日志模态框 -->
+    <div class="modal fade" id="logModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content" style="border-radius: 35px;">
+                <div class="modal-header">
+                    <h5 class="modal-title">聚合任务日志</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="logContent" class="log-modal-content"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let subs = [], aggregates = [], currentAggId = null;
         const editModal = new bootstrap.Modal(document.getElementById('editModal'));
+        const logModal = new bootstrap.Modal(document.getElementById('logModal'));
 
         async function loadData() {
             // 加载订阅列表
@@ -129,6 +147,9 @@
                         <button class="btn btn-sm btn-outline-info me-1" onclick="showLinks('${agg.id}')"><i class="bi bi-link"></i></button>
                     </td>
                     <td>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="showLog('${agg.id}')"><i class="bi bi-file-text"></i></button>
+                    </td>
+                    <td>
                         <button class="btn btn-sm btn-outline-primary me-2" onclick="editAggregate('${agg.id}')"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-success me-2" onclick="runAggregate('${agg.id}')"><i class="bi bi-play"></i></button>
                         <button class="btn btn-sm btn-outline-danger" onclick="deleteAggregate('${agg.id}')"><i class="bi bi-trash"></i></button>
@@ -143,6 +164,15 @@
             document.getElementById('aggM3uLink').value = `${baseUrl}/aggregate/${aggId}.m3u`;
             document.getElementById('aggTxtLink').value = `${baseUrl}/aggregate/${aggId}.txt`;
             document.getElementById('linksPanel').style.display = 'block';
+        }
+
+        async function showLog(aggId) {
+            const res = await fetch(`/api/aggregate/log/${aggId}`);
+            const data = await res.json();
+            const logs = data.logs || [];
+            const logContent = document.getElementById('logContent');
+            logContent.innerHTML = logs.length ? logs.join('\n') : '暂无日志';
+            logModal.show();
         }
 
         function copyLink(id) {
