@@ -1,6 +1,8 @@
 # M3U Checker Pro
 
-![Dashboard Screenshot](https://via.placeholder.com/800x400?text=Dashboard+Screenshot)
+[![Docker Image CI](https://github.com/je668/m3u-checker-pro/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/je668/m3u-checker-pro)
+![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Docker-green.svg)
 
 ✨ M3U Checker 是一个基于 Flask 的 IPTV 直播源检测工具，旨在帮助用户快速评估 M3U 订阅源中每个频道的可用性和质量。它通过并发请求和硬件加速解码，高效地测试频道的响应时间、分辨率、编码格式、码率等指标，并根据用户设定的分辨率过滤生成最优的播放列表（M3U/TXT）。内置计划任务功能，可定时自动更新，保持列表新鲜度。
 
