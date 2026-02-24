@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPG聚合管理 - M3U Checker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f1f5f9; padding: 30px; }
+        .glass-card { background: rgba(255,255,255,0.85); backdrop-filter: blur(15px); border-radius: 24px; border: 1px solid rgba(255,255,255,0.4); box-shadow: 0 15px 35px rgba(0,0,0,0.04); margin-bottom: 25px; padding: 25px; }
+        .btn-grad { border: none; color: white; border-radius: 16px; font-weight: 700; padding: 12px 22px; transition: 0.3s; box-shadow: 0 4px 15px rgba(0,0,0,0.15); }
+        .btn-primary-grad { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); }
+        .btn-success-grad { background: linear-gradient(90deg, #10b981 0%, #34d399 100%); }
+        .btn-danger-grad { background: linear-gradient(90deg, #dc2626 0%, #f43f5e 100%); }
+        .link-item { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .link-item input { flex: 1; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 8px; }
+        .back-btn { margin-bottom: 20px; }
+        .log-modal-content { background: #1e1e1e; color: #d4d4d4; font-family: 'Fira Code', monospace; font-size: 12px; padding: 20px; border-radius: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4 back-btn">
+            <h1 class="fw-800"><i class="bi bi-calendar-week me-2"></i>EPG聚合管理</h1>
+            <button class="btn btn-grad btn-primary-grad" onclick="location.href='/'">
+                <i class="bi bi-arrow-left me-2"></i>返回检测
+            </button>
+        </div>
+
+        <div class="glass-card">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h5 class="fw-bold">EPG聚合任务列表</h5>
+                <button class="btn btn-grad btn-primary-grad" id="newEpgAggBtn">新建EPG聚合</button>
+            </div>
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th>名称</th>
+                        <th>源数量</th>
+                        <th>缓存天数</th>
+                        <th>更新间隔</th>
+                        <th>最后更新</th>
+                        <th>链接</th>
+                        <th>日志</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="epgAggList"></tbody>
+            </table>
+        </div>
+
+        <!-- EPG文件链接展示区 -->
+        <div class="glass-card mt-4" id="linksPanel" style="display: none;">
+            <h5 class="fw-bold mb-3">EPG文件链接</h5>
+            <div class="link-item">
+                <span>XML:</span>
+                <input type="text" id="epgXmlLink" readonly class="form-control">
+                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgXmlLink')">复制</button>
+            </div>
+            <div class="link-item">
+                <span>XML.GZ:</span>
+                <input type="text" id="epgGzLink" readonly class="form-control">
+                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgGzLink')">复制</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑模态框 -->
+    <div class="modal fade" id="editModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content p-4" style="border-radius: 35px;">
+                <h5 class="fw-800 mb-4 text-center">EPG聚合配置</h5>
+                <input type="hidden" id="editId">
+                <div class="mb-3">
+                    <label class="fw-bold small text-muted">名称</label>
+                    <input type="text" id="editName" class="form-control bg-light border-0 rounded-3">
+                </div>
+                <div class="mb-3">
+                    <label class="fw-bold small text-muted">EPG源地址（每行一个）</label>
+                    <textarea id="editSources" class="form-control bg-light border-0 rounded-3" rows="4" placeholder="http://example1.xml&#10;http://example2.xml.gz"></textarea>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-6">
+                        <label class="fw-bold small text-muted">缓存天数</label>
+                        <input type="number" id="editCacheDays" class="form-control bg-light border-0 rounded-3" value="3" min="1" max="7">
+                    </div>
+                    <div class="col-6">
+                        <label class="fw-bold small text-muted">更新间隔（小时）</label>
+                        <input type="number" id="editUpdateInterval" class="form-control bg-light border-0 rounded-3" value="24" min="1">
+                    </div>
+                </div>
+                <div class="form-check form-switch mb-4">
+                    <input class="form-check-input" type="checkbox" id="editEnabled" checked>
+                    <label class="form-check-label fw-bold">启用自动更新</label>
+                </div>
+                <div class="d-flex justify-content-between pt-3 border-top">
+                    <button class="btn btn-outline-danger fw-bold" id="delBtn">删除</button>
+                    <button class="btn btn-grad btn-primary-grad px-5" id="saveBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 日志模态框 -->
+    <div class="modal fade" id="logModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content" style="border-radius: 35px;">
+                <div class="modal-header">
+                    <h5 class="modal-title">EPG聚合任务日志</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="logContent" class="log-modal-content"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let epgAggregates = [];
+        const editModal = new bootstrap.Modal(document.getElementById('editModal'));
+        const logModal = new bootstrap.Modal(document.getElementById('logModal'));
+
+        async function loadData() {
+            const res = await fetch('/api/epg_aggregates');
+            epgAggregates = await res.json();
+            renderEpgAggregates();
+        }
+
+        function renderEpgAggregates() {
+            const tbody = document.getElementById('epgAggList');
+            tbody.innerHTML = '';
+            epgAggregates.forEach(epg => {
+                const sources = epg.sources || [];
+                const updateTime = epg.last_update || '从未';
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${epg.name}</td>
+                    <td>${sources.length}</td>
+                    <td>${epg.cache_days || 3}</td>
+                    <td>${epg.update_interval || 24} 小时</td>
+                    <td>${updateTime}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-info me-1" onclick="showLinks('${epg.id}')"><i class="bi bi-link"></i></button>
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="showLog('${epg.id}')"><i class="bi bi-file-text"></i></button>
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary me-2" onclick="editEpgAggregate('${epg.id}')"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-success me-2" onclick="runEpgAggregate('${epg.id}')"><i class="bi bi-play"></i></button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteEpgAggregate('${epg.id}')"><i class="bi bi-trash"></i></button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function showLinks(epgId) {
+            const baseUrl = window.location.origin;
+            document.getElementById('epgXmlLink').value = `${baseUrl}/epg/${epgId}.xml`;
+            document.getElementById('epgGzLink').value = `${baseUrl}/epg/${epgId}.gz`;
+            document.getElementById('linksPanel').style.display = 'block';
+        }
+
+        async function showLog(epgId) {
+            const res = await fetch(`/api/epg_aggregate/log/${epgId}`);
+            const data = await res.json();
+            const logs = data.logs || [];
+            const logContent = document.getElementById('logContent');
+            logContent.innerHTML = logs.length ? logs.join('\n') : '暂无日志';
+            logModal.show();
+        }
+
+        function copyLink(id) {
+            const input = document.getElementById(id);
+            input.select();
+            document.execCommand('copy');
+            alert('已复制到剪贴板');
+        }
+
+        function editEpgAggregate(id) {
+            const epg = epgAggregates.find(e => e.id === id) || {};
+            document.getElementById('editId').value = epg.id || '';
+            document.getElementById('editName').value = epg.name || '';
+            document.getElementById('editSources').value = (epg.sources || []).join('\n');
+            document.getElementById('editCacheDays').value = epg.cache_days || 3;
+            document.getElementById('editUpdateInterval').value = epg.update_interval || 24;
+            document.getElementById('editEnabled').checked = epg.enabled !== false;
+            editModal.show();
+        }
+
+        document.getElementById('newEpgAggBtn').onclick = () => editEpgAggregate(null);
+
+        document.getElementById('saveBtn').onclick = async () => {
+            const id = document.getElementById('editId').value;
+            const name = document.getElementById('editName').value;
+            const sources = document.getElementById('editSources').value.split('\n').map(s => s.trim()).filter(s => s);
+            const cache_days = parseInt(document.getElementById('editCacheDays').value) || 3;
+            const update_interval = parseInt(document.getElementById('editUpdateInterval').value) || 24;
+            const enabled = document.getElementById('editEnabled').checked;
+            const data = {
+                id: id,
+                name: name,
+                sources: sources,
+                cache_days: cache_days,
+                update_interval: update_interval,
+                enabled: enabled
+            };
+            await fetch('/api/epg_aggregates', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            editModal.hide();
+            loadData();
+        };
+
+        document.getElementById('delBtn').onclick = async () => {
+            const id = document.getElementById('editId').value;
+            if (!id || !confirm('确定删除此EPG聚合？')) return;
+            await fetch('/api/epg_aggregate/delete/' + id);
+            editModal.hide();
+            loadData();
+        };
+
+        async function runEpgAggregate(id) {
+            await fetch('/api/epg_aggregate/run/' + id);
+            alert('EPG聚合任务已启动，稍后刷新页面查看链接');
+        }
+
+        async function deleteEpgAggregate(id) {
+            if (!confirm('确定删除此EPG聚合？')) return;
+            await fetch('/api/epg_aggregate/delete/' + id);
+            loadData();
+        }
+
+        window.onload = loadData;
+    </script>
+</body>
+</html>
