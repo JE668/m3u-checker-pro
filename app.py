@@ -19,6 +19,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 subs_status, ip_cache = {}, {}
+aggregates_status = {}  # 聚合任务运行状态
 api_lock, log_lock, file_lock = threading.Lock(), threading.Lock(), threading.Lock()
 scheduler = BackgroundScheduler()
 scheduler.start()
@@ -493,7 +494,7 @@ def run_task(sub_id):
             "banned": len(status["blacklisted_hosts"])
         },
         "analytics": status["analytics"],
-        "valid_list": valid_list   # 新增：供聚合使用
+        "valid_list": valid_list
     }
     with open(os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json"), "w", encoding="utf-8") as f:
         json.dump(arch, f, ensure_ascii=False)
@@ -517,28 +518,61 @@ def run_task(sub_id):
 
     status["running"] = False
 
+    # 触发包含此订阅的聚合任务自动更新
+    config = load_config()
+    for agg in config.get("aggregates", []):
+        if sub_id in agg.get("subscription_ids", []):
+            # 启动聚合任务（如果尚未运行）
+            threading.Thread(target=run_aggregate, args=(agg["id"],), kwargs={"auto": True}).start()
+
 # ---------- 聚合任务（增强版，支持分组和每个频道多个链接）----------
-def run_aggregate(agg_id):
+def run_aggregate(agg_id, auto=False):
+    # 防止同一聚合任务并发运行
+    if aggregates_status.get(agg_id, {}).get("running"):
+        return
+    aggregates_status[agg_id] = {"running": True, "logs": []}
+    
+    def log(msg):
+        ts = get_now()
+        aggregates_status[agg_id]["logs"].append(f"{ts} - {msg}")
+    
+    log(f"🚀 聚合任务开始 (自动: {auto})")
     config = load_config()
     agg = next((a for a in config.get("aggregates", []) if a["id"] == agg_id), None)
     if not agg:
+        log("❌ 聚合配置不存在")
+        aggregates_status[agg_id]["running"] = False
         return
+
+    log(f"📋 聚合名称: {agg['name']}")
+    log(f"📦 包含订阅: {', '.join(agg.get('subscription_ids', []))}")
 
     # 读取所有选中订阅的 last_status 文件，收集有效频道
     channel_map = {}  # 标准名 -> [频道信息列表]
+    total_channels = 0
     for sub_id in agg.get("subscription_ids", []):
         status_path = os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json")
         if not os.path.exists(status_path):
+            log(f"⚠️ 订阅 {sub_id} 状态文件不存在，跳过")
             continue
         with open(status_path, 'r', encoding='utf-8') as f:
             status = json.load(f)
-        for item in status.get("valid_list", []):
+        valid_list = status.get("valid_list", [])
+        log(f"📡 订阅 {sub_id} 提供了 {len(valid_list)} 个有效源")
+        for item in valid_list:
             std_name, matched = match_channel_name(item["name"])
+            if matched:
+                log(f"🔤 别名匹配: '{item['name']}' -> '{std_name}'")
+            else:
+                log(f"🔤 未匹配别名: '{item['name']}' 保持原样")
             item_copy = item.copy()
             item_copy["name"] = std_name
             if std_name not in channel_map:
                 channel_map[std_name] = []
             channel_map[std_name].append(item_copy)
+            total_channels += 1
+
+    log(f"📊 共收集到 {total_channels} 个原始频道，去重后 {len(channel_map)} 个标准频道")
 
     # 对每个频道的列表按评分降序排序
     for name in channel_map:
@@ -555,24 +589,30 @@ def run_aggregate(agg_id):
                 if not line or line.startswith('#'):
                     continue
                 if ',#genre#' in line:
-                    # 分类行，如 "📺央视频道,#genre#"
                     current_group = line.split(',')[0].strip()
+                    log(f"📂 识别分组: {current_group}")
                 else:
-                    # 普通频道行
                     name = line
                     ordered_names.append(name)
                     group_map[name] = current_group
+        log(f"📋 从 demo.txt 加载了 {len(ordered_names)} 个频道顺序")
     else:
-        # 无 demo.txt，按标准名排序
         ordered_names = sorted(channel_map.keys())
+        log(f"📋 未找到 demo.txt，使用字母顺序")
 
     # 按顺序生成最终列表（展平所有频道的所有链接）
     final_list = []
+    matched_count = 0
     for name in ordered_names:
         if name in channel_map:
             for item in channel_map[name]:
                 item["group"] = group_map.get(name, "未分组")
                 final_list.append(item)
+                matched_count += 1
+        else:
+            log(f"⚠️ demo.txt 中的频道 '{name}' 在源中未找到")
+
+    log(f"✅ 最终生成 {len(final_list)} 个有效链接")
 
     # 生成输出文件
     update_ts = get_now()
@@ -581,7 +621,6 @@ def run_aggregate(agg_id):
     m3u_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.m3u")
     txt_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.txt")
     
-    # 生成带分组的 M3U
     with open(m3u_path, 'w', encoding='utf-8') as fm:
         fm.write(f"#EXTM3U x-tvg-url=\"{epg}\"\n# Updated: {update_ts}\n")
         for c in final_list:
@@ -591,11 +630,12 @@ def run_aggregate(agg_id):
             fm.write(f"#EXTINF:-1 tvg-name=\"{tvg_name}\" tvg-logo=\"{tvg_logo}\" group-title=\"{group_title}\",{tvg_name}\n")
             fm.write(f"{c['url']}\n")
 
-    # 生成 TXT（保持原有简单格式）
     with open(txt_path, 'w', encoding='utf-8') as ft:
         ft.write(f"# Updated: {update_ts}\n")
         for c in final_list:
             ft.write(f"{c['name']},{c['url']}\n")
+
+    log(f"💾 文件已写入: {m3u_path}, {txt_path}")
 
     # 记录聚合状态
     agg_status = {
@@ -610,6 +650,9 @@ def run_aggregate(agg_id):
     agg_status_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}_status.json")
     with open(agg_status_path, 'w', encoding='utf-8') as f:
         json.dump(agg_status, f, ensure_ascii=False)
+
+    log(f"🏁 聚合任务完成，耗时 {format_duration(time.time() - start_time)}")
+    aggregates_status[agg_id]["running"] = False
 
 # ---------- 计划任务调度 ----------
 def clear_sub_jobs(sub_id):
@@ -853,8 +896,13 @@ def api_aggregates():
 
 @app.route('/api/aggregate/run/<agg_id>')
 def run_aggregate_api(agg_id):
-    threading.Thread(target=run_aggregate, args=(agg_id,)).start()
+    threading.Thread(target=run_aggregate, args=(agg_id,), kwargs={"auto": False}).start()
     return jsonify({"status": "ok"})
+
+@app.route('/api/aggregate/log/<agg_id>')
+def get_aggregate_log(agg_id):
+    logs = aggregates_status.get(agg_id, {}).get("logs", [])
+    return jsonify({"logs": logs})
 
 @app.route('/api/aggregate/delete/<agg_id>')
 def delete_aggregate(agg_id):
