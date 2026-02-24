@@ -290,7 +290,8 @@ def test_single_channel(sub_id, name, url, use_hw):
                     status["blacklisted_hosts"].add(hp)
                     status["logs"].append(f"⚠️ 熔断激活: 接口 {hp} 连续失败10次，已跳过。")
             if not status.get("stop_requested"):
-                status["logs"].append(f"❌ {name}: 失败({str(e)}) | 🔌{hp}")
+                # 修改点：将失败日志中的 🔌 替换为 🌐
+                status["logs"].append(f"❌ {name}: 失败({str(e)}) | 🌐{hp}")
         return None
     finally:
         with log_lock:
@@ -367,6 +368,9 @@ def run_task(sub_id):
     if total_num > 0:
         unique_hosts = list(set([urlparse(c[1]).hostname for c in raw_channels if c[1]]))
         fetch_ip_locations_sync(sub_id, unique_hosts)
+
+        # 新增：阶段2开始日志
+        subs_status[sub_id]["logs"].append(f"🚀 阶段 2/2: 开始探测 {total_num} 个频道...")
 
         with ThreadPoolExecutor(max_workers=int(sub.get("threads", 10))) as executor:
             futures = [executor.submit(test_single_channel, sub_id, n, u, use_hw) for n, u in raw_channels]
