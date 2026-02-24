@@ -13,6 +13,8 @@
         .btn-primary-grad { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); }
         .btn-success-grad { background: linear-gradient(90deg, #10b981 0%, #34d399 100%); }
         .btn-danger-grad { background: linear-gradient(90deg, #dc2626 0%, #f43f5e 100%); }
+        .link-item { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .link-item input { flex: 1; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 8px; }
     </style>
 </head>
 <body>
@@ -29,11 +31,27 @@
                         <th>名称</th>
                         <th>包含订阅</th>
                         <th>最后更新</th>
+                        <th>链接</th>
                         <th>操作</th>
                     </tr>
                 </thead>
                 <tbody id="aggList"></tbody>
             </table>
+        </div>
+
+        <!-- 聚合文件链接展示区 -->
+        <div class="glass-card mt-4" id="linksPanel" style="display: none;">
+            <h5 class="fw-bold mb-3">聚合文件链接</h5>
+            <div class="link-item">
+                <span>M3U:</span>
+                <input type="text" id="aggM3uLink" readonly class="form-control">
+                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('aggM3uLink')">复制</button>
+            </div>
+            <div class="link-item">
+                <span>TXT:</span>
+                <input type="text" id="aggTxtLink" readonly class="form-control">
+                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('aggTxtLink')">复制</button>
+            </div>
         </div>
     </div>
 
@@ -72,7 +90,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        let subs = [], aggregates = [];
+        let subs = [], aggregates = [], currentAggId = null;
         const editModal = new bootstrap.Modal(document.getElementById('editModal'));
 
         async function loadData() {
@@ -101,6 +119,9 @@
                     <td>${subNames}</td>
                     <td>${updateTime}</td>
                     <td>
+                        <button class="btn btn-sm btn-outline-info me-1" onclick="showLinks('${agg.id}')"><i class="bi bi-link"></i></button>
+                    </td>
+                    <td>
                         <button class="btn btn-sm btn-outline-primary me-2" onclick="editAggregate('${agg.id}')"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-success me-2" onclick="runAggregate('${agg.id}')"><i class="bi bi-play"></i></button>
                         <button class="btn btn-sm btn-outline-danger" onclick="deleteAggregate('${agg.id}')"><i class="bi bi-trash"></i></button>
@@ -110,8 +131,23 @@
             });
         }
 
+        function showLinks(aggId) {
+            const baseUrl = window.location.origin;
+            document.getElementById('aggM3uLink').value = `${baseUrl}/aggregate/${aggId}.m3u`;
+            document.getElementById('aggTxtLink').value = `${baseUrl}/aggregate/${aggId}.txt`;
+            document.getElementById('linksPanel').style.display = 'block';
+        }
+
+        function copyLink(id) {
+            const input = document.getElementById(id);
+            input.select();
+            document.execCommand('copy');
+            alert('已复制到剪贴板');
+        }
+
         function editAggregate(id) {
             const agg = aggregates.find(a => a.id === id) || {};
+            currentAggId = agg.id || null;
             document.getElementById('editId').value = agg.id || '';
             document.getElementById('editName').value = agg.name || '';
             document.getElementById('editStrategy').value = agg.strategy || 'best_score';
@@ -168,7 +204,7 @@
 
         async function runAggregate(id) {
             await fetch('/api/aggregate/run/' + id);
-            alert('聚合任务已启动');
+            alert('聚合任务已启动，稍后刷新页面查看链接');
         }
 
         async function deleteAggregate(id) {
