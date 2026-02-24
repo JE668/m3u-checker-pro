@@ -715,6 +715,19 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 log(f"⚠️ 源 {source_url} 返回状态码 {resp.status_code}，跳过")
                 continue
             content = resp.content
+
+            # 处理可能为 gzip 压缩的内容
+            is_gz = source_url.endswith('.gz') or resp.headers.get('Content-Encoding') == 'gzip'
+            if is_gz:
+                try:
+                    # 尝试解压
+                    buf = BytesIO(content)
+                    with gzip.GzipFile(fileobj=buf) as gz_file:
+                        content = gz_file.read()
+                    log(f"📦 检测到 gzip 压缩，已解压")
+                except Exception as e:
+                    log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
+
             # 尝试解析 XML
             try:
                 tree = ET.parse(BytesIO(content))
@@ -724,6 +737,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 continue
 
             # 遍历所有 programme
+            count = 0
             for prog in root.findall('programme'):
                 start = prog.get('start')
                 channel = prog.get('channel')
@@ -736,7 +750,8 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                         key = (channel, start, title)
                         if key not in programmes:
                             programmes[key] = prog
-                            log(f"➕ 添加节目: {channel} {start} {title[:20]}")
+                            count += 1
+            log(f"➕ 源 {idx+1} 添加了 {count} 个节目")
         except Exception as e:
             log(f"❌ 下载源 {source_url} 失败: {str(e)}")
 
@@ -879,9 +894,9 @@ def reschedule_epg_all():
 def index():
     return render_template('index.html')
 
-@app.route('/aggregate')
-def aggregate_page():
-    return render_template('aggregate.html')
+@app.route('/m3u_aggregate')
+def m3u_aggregate_page():
+    return render_template('m3u_aggregate.html')
 
 @app.route('/epg_aggregate')
 def epg_aggregate_page():
