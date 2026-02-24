@@ -517,7 +517,7 @@ def run_task(sub_id):
 
     status["running"] = False
 
-# ---------- 聚合任务（增强版，支持分组）----------
+# ---------- 聚合任务（增强版，支持分组和每个频道多个链接）----------
 def run_aggregate(agg_id):
     config = load_config()
     agg = next((a for a in config.get("aggregates", []) if a["id"] == agg_id), None)
@@ -525,7 +525,7 @@ def run_aggregate(agg_id):
         return
 
     # 读取所有选中订阅的 last_status 文件，收集有效频道
-    channel_map = {}  # 标准名 -> 最佳频道信息
+    channel_map = {}  # 标准名 -> [频道信息列表]
     for sub_id in agg.get("subscription_ids", []):
         status_path = os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json")
         if not os.path.exists(status_path):
@@ -534,12 +534,15 @@ def run_aggregate(agg_id):
             status = json.load(f)
         for item in status.get("valid_list", []):
             std_name, matched = match_channel_name(item["name"])
-            # 如果未匹配，std_name 保持原样
-            if std_name not in channel_map or item["score"] > channel_map[std_name]["score"]:
-                # 保存时，将原始名称改为标准名称（用于输出）
-                item_copy = item.copy()
-                item_copy["name"] = std_name
-                channel_map[std_name] = item_copy
+            item_copy = item.copy()
+            item_copy["name"] = std_name
+            if std_name not in channel_map:
+                channel_map[std_name] = []
+            channel_map[std_name].append(item_copy)
+
+    # 对每个频道的列表按评分降序排序
+    for name in channel_map:
+        channel_map[name].sort(key=lambda x: x['score'], reverse=True)
 
     # 读取 demo.txt 获取顺序和分组信息
     ordered_names = []
@@ -563,14 +566,13 @@ def run_aggregate(agg_id):
         # 无 demo.txt，按标准名排序
         ordered_names = sorted(channel_map.keys())
 
-    # 按顺序生成最终列表
+    # 按顺序生成最终列表（展平所有频道的所有链接）
     final_list = []
     for name in ordered_names:
         if name in channel_map:
-            item = channel_map[name]
-            # 添加分组信息
-            item["group"] = group_map.get(name, "未分组")
-            final_list.append(item)
+            for item in channel_map[name]:
+                item["group"] = group_map.get(name, "未分组")
+                final_list.append(item)
 
     # 生成输出文件
     update_ts = get_now()
@@ -583,7 +585,7 @@ def run_aggregate(agg_id):
     with open(m3u_path, 'w', encoding='utf-8') as fm:
         fm.write(f"#EXTM3U x-tvg-url=\"{epg}\"\n# Updated: {update_ts}\n")
         for c in final_list:
-            tvg_name = c['name']  # 标准名称
+            tvg_name = c['name']
             tvg_logo = f"{logo_base}{tvg_name}.png"
             group_title = c.get('group', '未分组')
             fm.write(f"#EXTINF:-1 tvg-name=\"{tvg_name}\" tvg-logo=\"{tvg_logo}\" group-title=\"{group_title}\",{tvg_name}\n")
@@ -832,7 +834,22 @@ def api_aggregates():
         save_config(config)
         return jsonify({"status": "ok"})
     else:
-        return jsonify(config.get("aggregates", []))
+        agg_list = config.get("aggregates", [])
+        result = []
+        for agg in agg_list:
+            status_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg['id']}_status.json")
+            last_update = "从未"
+            if os.path.exists(status_path):
+                try:
+                    with open(status_path, 'r', encoding='utf-8') as f:
+                        st = json.load(f)
+                        last_update = st.get("update_time", "从未")
+                except:
+                    pass
+            agg_copy = agg.copy()
+            agg_copy["last_update"] = last_update
+            result.append(agg_copy)
+        return jsonify(result)
 
 @app.route('/api/aggregate/run/<agg_id>')
 def run_aggregate_api(agg_id):
