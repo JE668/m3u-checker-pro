@@ -220,9 +220,49 @@
     document.getElementById('saveGlobalSettingsBtn').onclick = saveGlobalSettings;
     document.getElementById('delBtn').onclick = async () => { if(confirm('⚠️ 确认彻底删除任务？')){ await fetch('/api/subs/delete/'+document.getElementById('editId').value); editModal.hide(); currentId=null; document.getElementById('dashboard').classList.add('d-none'); loadSubs(); } };
 
-    function editCurrent() { const s = subs.find(x => x.id === currentId); if(!s) return; document.getElementById('editId').value=s.id; document.getElementById('editName').value=s.name; document.getElementById('editUrl').value=s.url; document.getElementById('editThreads').value=s.threads||10; document.getElementById('editEnabled').checked = s.enabled!==false; ["sd", "720p", "1080p", "4k", "8k"].forEach(r => document.getElementById('res_'+r).checked = (s.res_filter||[]).includes(r)); editModal.show(); }
-    function toggleFields() { const m=document.getElementById('editMode').value; document.getElementById('ef').classList.toggle('d-none', m!=='fixed'); document.getElementById('ei').classList.toggle('d-none', m!=='interval'); }
-    async function saveSub() { const f = []; ["sd", "720p", "1080p", "4k", "8k"].forEach(t => { if(document.getElementById('res_'+t).checked) f.push(t); }); const d = { id: document.getElementById('editId').value, name: document.getElementById('editName').value, url: document.getElementById('editUrl').value, threads: document.getElementById('editThreads').value, schedule_mode: document.getElementById('editMode').value, fixed_times: document.getElementById('editTimes').value, interval_hours: document.getElementById('editHours').value, enabled: document.getElementById('editEnabled').checked, res_filter: f }; await fetch('/api/subs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(d)}); editModal.hide(); loadSubs(); }
+    // 修改点：增加模式和时间字段的填充
+    function editCurrent() {
+        const s = subs.find(x => x.id === currentId);
+        if(!s) return;
+        document.getElementById('editId').value = s.id;
+        document.getElementById('editName').value = s.name;
+        document.getElementById('editUrl').value = s.url;
+        document.getElementById('editThreads').value = s.threads || 10;
+        document.getElementById('editEnabled').checked = s.enabled !== false;
+        ["sd", "720p", "1080p", "4k", "8k"].forEach(r => document.getElementById('res_'+r).checked = (s.res_filter||[]).includes(r));
+        
+        // 新增：填充模式和时间
+        document.getElementById('editMode').value = s.schedule_mode || 'none';
+        document.getElementById('editTimes').value = s.fixed_times || '';
+        document.getElementById('editHours').value = s.interval_hours || 1;
+        toggleFields();  // 更新界面显示
+        editModal.show();
+    }
+
+    function toggleFields() {
+        const m = document.getElementById('editMode').value;
+        document.getElementById('ef').classList.toggle('d-none', m !== 'fixed');
+        document.getElementById('ei').classList.toggle('d-none', m !== 'interval');
+    }
+
+    async function saveSub() {
+        const f = []; ["sd", "720p", "1080p", "4k", "8k"].forEach(t => { if(document.getElementById('res_'+t).checked) f.push(t); });
+        const d = {
+            id: document.getElementById('editId').value,
+            name: document.getElementById('editName').value,
+            url: document.getElementById('editUrl').value,
+            threads: document.getElementById('editThreads').value,
+            schedule_mode: document.getElementById('editMode').value,
+            fixed_times: document.getElementById('editTimes').value,
+            interval_hours: document.getElementById('editHours').value,
+            enabled: document.getElementById('editEnabled').checked,
+            res_filter: f
+        };
+        await fetch('/api/subs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(d)});
+        editModal.hide();
+        loadSubs();
+    }
+
     function startTask() { if(currentId) fetch('/api/start/' + currentId); autoScroll = true; }
     function stopTask() { if(currentId) fetch('/api/stop/' + currentId); }
     function showSettings() { settingsModal.show(); }
