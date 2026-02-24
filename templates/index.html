@@ -190,7 +190,7 @@
     async function updateStatus() {
         if(!currentId) return;
         try {
-            const res = await fetch('/api/status/' + currentId); const data = await res.json();
+            const res = await fetch('/api/status/' + currentId + '?limit=500'); const data = await res.json();
             document.getElementById('statTotal').innerText = data.total; document.getElementById('statCurrent').innerText = data.current;
             document.getElementById('statSuccess').innerText = data.success; document.getElementById('statBanned').innerText = data.banned_count;
             document.getElementById('statRate').innerText = (data.current > 0 ? Math.round(data.success/data.current*100) : 0) + '%';
