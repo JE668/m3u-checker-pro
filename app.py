@@ -13,6 +13,8 @@ DATA_DIR = "/app/data"
 LOG_DIR = os.path.join(DATA_DIR, "log")
 OUTPUT_DIR = os.path.join(DATA_DIR, "output")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+ALIAS_FILE = os.path.join(DATA_DIR, "alias.txt")
+DEMO_FILE = os.path.join(DATA_DIR, "demo.txt")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -21,6 +23,56 @@ api_lock, log_lock, file_lock = threading.Lock(), threading.Lock(), threading.Lo
 scheduler = BackgroundScheduler()
 scheduler.start()
 
+# ---------- 别名加载与匹配 ----------
+ALIAS_CACHE = None
+ALIAS_MTIME = None
+
+def load_aliases():
+    """加载 alias.txt，返回 {标准名称: [编译好的模式列表]}"""
+    global ALIAS_CACHE, ALIAS_MTIME
+    if not os.path.exists(ALIAS_FILE):
+        return {}
+    mtime = os.path.getmtime(ALIAS_FILE)
+    if ALIAS_CACHE is not None and ALIAS_MTIME == mtime:
+        return ALIAS_CACHE
+    aliases = {}
+    with open(ALIAS_FILE, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split(',')
+            main_name = parts[0].strip()
+            alias_list = [a.strip() for a in parts[1:]]
+            compiled = []
+            for a in alias_list:
+                if a.startswith('re:'):
+                    try:
+                        compiled.append(('re', re.compile(a[3:], re.IGNORECASE)))
+                    except:
+                        continue
+                else:
+                    compiled.append(('plain', a.lower()))
+            aliases[main_name] = compiled
+    ALIAS_CACHE = aliases
+    ALIAS_MTIME = mtime
+    return aliases
+
+def match_channel_name(raw_name):
+    """根据别名库匹配标准名称，返回 (标准名, 是否匹配)"""
+    aliases = load_aliases()
+    raw_lower = raw_name.lower()
+    for main_name, patterns in aliases.items():
+        for ptype, p in patterns:
+            if ptype == 'plain':
+                if p in raw_lower:
+                    return main_name, True
+            else:  # regex
+                if p.search(raw_name):
+                    return main_name, True
+    return raw_name, False
+
+# ---------- 工具函数 ----------
 def get_now():
     return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -33,6 +85,7 @@ def format_duration(seconds):
 def load_config():
     default = {
         "subscriptions": [],
+        "aggregates": [],
         "settings": {
             "use_hwaccel": True,
             "epg_url": "http://epg.51zmt.top:12489/e.xml",
@@ -46,6 +99,8 @@ def load_config():
             d = json.load(f)
             if "settings" not in d:
                 d["settings"] = default["settings"]
+            if "aggregates" not in d:
+                d["aggregates"] = []
             return d
     except:
         return default
@@ -290,7 +345,6 @@ def test_single_channel(sub_id, name, url, use_hw):
                     status["blacklisted_hosts"].add(hp)
                     status["logs"].append(f"⚠️ 熔断激活: 接口 {hp} 连续失败10次，已跳过。")
             if not status.get("stop_requested"):
-                # 修改点：将失败日志中的 🔌 替换为 🌐
                 status["logs"].append(f"❌ {name}: 失败({str(e)}) | 🌐{hp}")
         return None
     finally:
@@ -369,7 +423,6 @@ def run_task(sub_id):
         unique_hosts = list(set([urlparse(c[1]).hostname for c in raw_channels if c[1]]))
         fetch_ip_locations_sync(sub_id, unique_hosts)
 
-        # 新增：阶段2开始日志
         subs_status[sub_id]["logs"].append(f"🚀 阶段 2/2: 开始探测 {total_num} 个频道...")
 
         with ThreadPoolExecutor(max_workers=int(sub.get("threads", 10))) as executor:
@@ -428,7 +481,7 @@ def run_task(sub_id):
     status["logs"].append("======================================================")
     status["logs"].append(f"🏁 任务完成时间: {get_now()}")
 
-    # 存档状态
+    # 存档状态（包含 valid_list）
     arch = {
         "update_time": update_ts,
         "duration": duration,
@@ -439,7 +492,8 @@ def run_task(sub_id):
             "success": status["success"],
             "banned": len(status["blacklisted_hosts"])
         },
-        "analytics": status["analytics"]
+        "analytics": status["analytics"],
+        "valid_list": valid_list   # 新增：供聚合使用
     }
     with open(os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json"), "w", encoding="utf-8") as f:
         json.dump(arch, f, ensure_ascii=False)
@@ -462,6 +516,79 @@ def run_task(sub_id):
         status["logs"].append(f"⚠️ 写入文件失败: {e}")
 
     status["running"] = False
+
+# ---------- 聚合任务 ----------
+def run_aggregate(agg_id):
+    config = load_config()
+    agg = next((a for a in config.get("aggregates", []) if a["id"] == agg_id), None)
+    if not agg:
+        return
+
+    # 读取所有选中订阅的 last_status 文件，收集有效频道
+    channel_map = {}  # 标准名 -> 最佳频道信息
+    for sub_id in agg.get("subscription_ids", []):
+        status_path = os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json")
+        if not os.path.exists(status_path):
+            continue
+        with open(status_path, 'r', encoding='utf-8') as f:
+            status = json.load(f)
+        for item in status.get("valid_list", []):
+            std_name, matched = match_channel_name(item["name"])
+            # 如果未匹配，std_name 保持原样
+            if std_name not in channel_map or item["score"] > channel_map[std_name]["score"]:
+                # 保存时，将原始名称改为标准名称（用于输出）
+                item_copy = item.copy()
+                item_copy["name"] = std_name
+                channel_map[std_name] = item_copy
+
+    # 读取 demo.txt 模板顺序
+    ordered_names = []
+    if os.path.exists(DEMO_FILE):
+        with open(DEMO_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if ',#' in line:
+                    continue  # 分类行跳过
+                ordered_names.append(line)
+    else:
+        ordered_names = sorted(channel_map.keys())
+
+    # 按顺序生成最终列表
+    final_list = []
+    for name in ordered_names:
+        if name in channel_map:
+            final_list.append(channel_map[name])
+
+    # 生成输出文件
+    update_ts = get_now()
+    epg = config["settings"]["epg_url"]
+    logo = config["settings"]["logo_base"]
+    m3u_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.m3u")
+    txt_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.txt")
+    with open(m3u_path, 'w', encoding='utf-8') as fm:
+        fm.write(f"#EXTM3U x-tvg-url=\"{epg}\"\n# Updated: {update_ts}\n")
+        for c in final_list:
+            fm.write(f"#EXTINF:-1 tvg-logo=\"{logo}{c['name']}.png\",{c['name']}\n{c['url']}\n")
+    with open(txt_path, 'w', encoding='utf-8') as ft:
+        ft.write(f"# Updated: {update_ts}\n")
+        for c in final_list:
+            ft.write(f"{c['name']},{c['url']}\n")
+
+    # 记录聚合状态
+    agg_status = {
+        "update_time": update_ts,
+        "total": len(final_list),
+        "subscriptions": agg["subscription_ids"],
+        "files": {
+            "m3u": f"/aggregate/{agg_id}.m3u",
+            "txt": f"/aggregate/{agg_id}.txt"
+        }
+    }
+    agg_status_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}_status.json")
+    with open(agg_status_path, 'w', encoding='utf-8') as f:
+        json.dump(agg_status, f, ensure_ascii=False)
 
 # ---------- 计划任务调度 ----------
 def clear_sub_jobs(sub_id):
@@ -518,6 +645,10 @@ def reschedule_all():
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/aggregate')
+def aggregate_page():
+    return render_template('aggregate.html')
 
 @app.route('/api/sys_info')
 def sys_info():
@@ -663,6 +794,43 @@ def delete_sub(sub_id):
 @app.route('/sub/<sub_id>.<ext>')
 def get_sub_file(sub_id, ext):
     return send_from_directory(OUTPUT_DIR, f"{sub_id}.{ext}")
+
+# ---------- 聚合相关 API ----------
+@app.route('/api/aggregates', methods=['GET', 'POST'])
+def api_aggregates():
+    config = load_config()
+    if request.method == 'POST':
+        data = request.json
+        agg_list = config.get("aggregates", [])
+        if not data.get("id"):
+            data["id"] = str(uuid.uuid4())[:8]
+            agg_list.append(data)
+        else:
+            for i, a in enumerate(agg_list):
+                if a["id"] == data["id"]:
+                    agg_list[i] = data
+        config["aggregates"] = agg_list
+        save_config(config)
+        return jsonify({"status": "ok"})
+    else:
+        return jsonify(config.get("aggregates", []))
+
+@app.route('/api/aggregate/run/<agg_id>')
+def run_aggregate_api(agg_id):
+    threading.Thread(target=run_aggregate, args=(agg_id,)).start()
+    return jsonify({"status": "ok"})
+
+@app.route('/api/aggregate/delete/<agg_id>')
+def delete_aggregate(agg_id):
+    config = load_config()
+    agg_list = config.get("aggregates", [])
+    config["aggregates"] = [a for a in agg_list if a["id"] != agg_id]
+    save_config(config)
+    return jsonify({"status": "ok"})
+
+@app.route('/aggregate/<agg_id>.<ext>')
+def get_aggregate_file(agg_id, ext):
+    return send_from_directory(OUTPUT_DIR, f"aggregate_{agg_id}.{ext}")
 
 # ---------- 启动时初始化调度 ----------
 with app.app_context():
