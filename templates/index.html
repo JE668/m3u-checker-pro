@@ -66,6 +66,10 @@
         <button class="btn btn-grad btn-primary-grad w-100 mt-4 shadow" id="addNewTaskBtn">
             <i class="bi bi-plus-circle-fill"></i> 新增检测任务
         </button>
+        <!-- 聚合管理入口卡片 -->
+        <button class="btn btn-grad btn-secondary-custom w-100 mt-3 shadow" onclick="location.href='/aggregate'">
+            <i class="bi bi-files me-2"></i> 聚合管理
+        </button>
         <div class="sys-info-box">
             <div class="d-flex justify-content-between"><span>CPU 负载</span><span id="sysCpu">0%</span></div>
             <div class="progress mt-1" style="height:4px"><div id="cpuBar" class="progress-bar" style="width:0%"></div></div>
@@ -220,7 +224,6 @@
     document.getElementById('saveGlobalSettingsBtn').onclick = saveGlobalSettings;
     document.getElementById('delBtn').onclick = async () => { if(confirm('⚠️ 确认彻底删除任务？')){ await fetch('/api/subs/delete/'+document.getElementById('editId').value); editModal.hide(); currentId=null; document.getElementById('dashboard').classList.add('d-none'); loadSubs(); } };
 
-    // 修改点：增加模式和时间字段的填充
     function editCurrent() {
         const s = subs.find(x => x.id === currentId);
         if(!s) return;
