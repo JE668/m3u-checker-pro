@@ -53,7 +53,6 @@ def load_config():
 def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
-    # 保存配置后重新调度所有任务
     reschedule_all()
 
 # ---------- CSV 日志记录 ----------
@@ -73,7 +72,6 @@ def fetch_ip_locations_sync(sub_id, host_list):
     total = len(host_list)
     status["logs"].append(f"🌐 阶段 1/2: 正在检索 {total} 个节点的地理位置...")
 
-    # 先过滤出未缓存的 IP
     ips_to_query = []
     ip_to_host = {}
     for host in host_list:
@@ -154,7 +152,7 @@ def probe_stream(url, use_hw):
                     num, den = afps.split('/')
                     if int(den) > 0:
                         fps = str(round(int(num)/int(den)))
-                if os.getenv('DEBUG_HW'):
+                if os.getenv('DEBUG_HW') == '1':
                     print(f"[HW] {mode_name} succeeded for {url}")
                 return {
                     "res": f"{v.get('width','?')}x{v.get('height','?')}",
@@ -166,7 +164,7 @@ def probe_stream(url, use_hw):
                     "icon": icon
                 }
         except Exception as e:
-            if os.getenv('DEBUG_HW'):
+            if os.getenv('DEBUG_HW') == '1':
                 print(f"[HW] {mode_name} failed: {e}")
         return None
     
@@ -175,11 +173,11 @@ def probe_stream(url, use_hw):
         res = run_f(hw_p, "💎", "vaapi/qsv")
         if res:
             return res
-        if os.getenv('DEBUG_HW'):
+        if os.getenv('DEBUG_HW') == '1':
             print(f"Hardware acceleration failed for {url}, falling back to software")
     return run_f([], "💻", "software")
 
-# ---------- 单频道测试（新增统计维度）----------
+# ---------- 单频道测试 ----------
 def test_single_channel(sub_id, name, url, use_hw):
     status = subs_status[sub_id]
 
@@ -204,6 +202,7 @@ def test_single_channel(sub_id, name, url, use_hw):
         if hp not in status["consecutive_failures"]:
             status["consecutive_failures"][hp] = 0
 
+    geo = None
     try:
         start_time = time.time()
         with requests.get(url, stream=True, timeout=8, verify=False,
@@ -297,10 +296,10 @@ def test_single_channel(sub_id, name, url, use_hw):
         with log_lock:
             status["current"] += 1
             status["summary_host"][hp]["t"] += 1
-            ck = geo['city'] if 'geo' in locals() else "未知城市"
-            if ck not in status["summary_city"]:
-                status["summary_city"][ck] = {"t": 0, "s": 0}
-            status["summary_city"][ck]["t"] += 1
+            city = geo['city'] if geo else "未知城市"
+            if city not in status["summary_city"]:
+                status["summary_city"][city] = {"t": 0, "s": 0}
+            status["summary_city"][city]["t"] += 1
 
 # ---------- 任务运行 ----------
 def run_task(sub_id):
@@ -391,7 +390,7 @@ def run_task(sub_id):
     duration = format_duration(time.time() - start_ts)
     update_ts = get_now()
 
-    # 生成报告（新增统计）
+    # 生成报告
     status["logs"].append(" ")
     status["logs"].append("📜 ==================== 探测结算报告 ====================")
     status["logs"].append(f"⏱️ 任务总耗时: {duration} | 有效源: {len(valid_list)} / 成功探测: {status['success']}")
@@ -536,7 +535,6 @@ def sys_info():
 def network_test():
     res = {"v4": {"status": False, "ip": ""}, "v6": {"status": False, "ip": ""}}
     
-    # IPv4 测试，使用多个备用服务
     ipv4_services = [
         "https://api4.ipify.org?format=json",
         "https://api.ip.sb/ip?format=json",
@@ -559,7 +557,6 @@ def network_test():
         except:
             continue
 
-    # IPv6 测试
     try:
         r6 = requests.get("https://api6.ipify.org?format=json", timeout=8).json()
         res["v6"] = {"status": True, "ip": r6['ip']}
