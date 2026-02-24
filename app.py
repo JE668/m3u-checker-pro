@@ -67,43 +67,76 @@ def write_log_csv(row_dict):
                 writer.writeheader()
             writer.writerow(row_dict)
 
-# ---------- 地理定位 ----------
-def get_ip_info_safe(hostname):
-    try:
-        if hostname in ip_cache:
-            return ip_cache[hostname]
-        ip = socket.gethostbyname(hostname)
-        if ip in ip_cache:
-            return ip_cache[ip]
-        with api_lock:
-            time.sleep(1.35)  # ip-api.com 限流
-            r = requests.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=3, verify=False).json()
-            if r.get('status') == 'success':
-                info = {"city": r.get('city', '未知'), "isp": r.get('isp', '未知')}
-                ip_cache[ip] = info
-                ip_cache[hostname] = info
-                return info
-    except:
-        pass
-    return {"city": "未知", "isp": "未知"}
-
+# ---------- 地理定位（批量版）----------
 def fetch_ip_locations_sync(sub_id, host_list):
     status = subs_status[sub_id]
     total = len(host_list)
     status["logs"].append(f"🌐 阶段 1/2: 正在检索 {total} 个节点的地理位置...")
-    for idx, host in enumerate(host_list):
+
+    # 先过滤出未缓存的 IP
+    ips_to_query = []
+    ip_to_host = {}
+    for host in host_list:
+        if host in ip_cache:
+            continue
+        try:
+            ip = socket.gethostbyname(host)
+            if ip in ip_cache:
+                ip_cache[host] = ip_cache[ip]
+                continue
+            ips_to_query.append(ip)
+            ip_to_host[ip] = host
+        except:
+            pass
+
+    ips_to_query = list(set(ips_to_query))
+    if not ips_to_query:
+        status["logs"].append("✅ 阶段 1/2: 所有节点均已缓存，无需查询。")
+        return
+
+    batch_size = 100
+    total_ips = len(ips_to_query)
+    queried = 0
+    for i in range(0, total_ips, batch_size):
         if status.get("stop_requested"):
             break
-        info = get_ip_info_safe(host)
-        if info['city'] != "未知":
-            status["logs"].append(f"📍 定位分析 [{idx+1}/{total}]: {host} -> {info['city']}")
+        batch = ips_to_query[i:i+batch_size]
+        try:
+            with api_lock:
+                time.sleep(1.35)
+                r = requests.post(
+                    "http://ip-api.com/batch",
+                    json=batch,
+                    timeout=10,
+                    verify=False
+                ).json()
+            for idx, info in enumerate(r):
+                ip = batch[idx]
+                if info.get('status') == 'success':
+                    city = info.get('city', '未知')
+                    isp = info.get('isp', '未知')
+                    ip_cache[ip] = {"city": city, "isp": isp}
+                    host = ip_to_host.get(ip)
+                    if host:
+                        ip_cache[host] = ip_cache[ip]
+                        status["logs"].append(f"📍 定位分析 [{queried+idx+1}/{total_ips}]: {host} -> {city}")
+                else:
+                    ip_cache[ip] = {"city": "未知", "isp": "未知"}
+            queried += len(batch)
+        except Exception as e:
+            status["logs"].append(f"⚠️ 批量查询失败: {str(e)}")
+            for ip in batch:
+                ip_cache[ip] = {"city": "未知", "isp": "未知"}
+            queried += len(batch)
+
     status["logs"].append(f"✅ 阶段 1/2: 定位预检已完成。")
 
-# ---------- FFprobe 探测 ----------
+# ---------- FFprobe 探测（带调试）----------
 def probe_stream(url, use_hw):
     accel_type = os.getenv("HW_ACCEL_TYPE", "vaapi").lower()
     device = os.getenv("VAAPI_DEVICE") or os.getenv("QSV_DEVICE") or "/dev/dri/renderD128"
-    def run_f(hw, icon):
+    
+    def run_f(hw, icon, mode_name):
         cmd = ['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-print_format', 'json',
                '-user_agent', 'Mozilla/5.0', '-probesize', '5000000', '-analyzeduration', '5000000'] + hw + ['-i', url]
         try:
@@ -121,6 +154,8 @@ def probe_stream(url, use_hw):
                     num, den = afps.split('/')
                     if int(den) > 0:
                         fps = str(round(int(num)/int(den)))
+                if os.getenv('DEBUG_HW'):
+                    print(f"[HW] {mode_name} succeeded for {url}")
                 return {
                     "res": f"{v.get('width','?')}x{v.get('height','?')}",
                     "h": v.get('height', 0),
@@ -130,21 +165,24 @@ def probe_stream(url, use_hw):
                     "br": f"{round(int(rb)/1024/1024, 2)}Mbps",
                     "icon": icon
                 }
-        except:
-            pass
+        except Exception as e:
+            if os.getenv('DEBUG_HW'):
+                print(f"[HW] {mode_name} failed: {e}")
         return None
+    
     if use_hw:
         hw_p = ['-hwaccel', 'vaapi', '-hwaccel_device', device, '-hwaccel_output_format', 'vaapi'] if accel_type == "vaapi" else ['-hwaccel', 'qsv', '-qsv_device', device]
-        res = run_f(hw_p, "💎")
+        res = run_f(hw_p, "💎", "vaapi/qsv")
         if res:
             return res
-    return run_f([], "💻")
+        if os.getenv('DEBUG_HW'):
+            print(f"Hardware acceleration failed for {url}, falling back to software")
+    return run_f([], "💻", "software")
 
-# ---------- 单频道测试 ----------
+# ---------- 单频道测试（新增统计维度）----------
 def test_single_channel(sub_id, name, url, use_hw):
     status = subs_status[sub_id]
 
-    # 停止请求检查
     if status.get("stop_requested"):
         with log_lock:
             status["current"] += 1
@@ -154,14 +192,12 @@ def test_single_channel(sub_id, name, url, use_hw):
     host = parsed.hostname
     hp = f"{host}:{parsed.port or (443 if parsed.scheme=='https' else 80)}"
 
-    # 黑名单检查
     if hp in status["blacklisted_hosts"]:
         with log_lock:
             status["analytics"]["stability"]["banned"] += 1
             status["current"] += 1
         return None
 
-    # 初始化统计结构
     with log_lock:
         if hp not in status["summary_host"]:
             status["summary_host"][hp] = {"t": 0, "s": 0, "f": 0, "lat_sum": 0, "speed_sum": 0, "score_sum": 0}
@@ -207,10 +243,27 @@ def test_single_channel(sub_id, name, url, use_hw):
             status["analytics"]["v_codec"][meta['v_codec']] = status["analytics"]["v_codec"].get(meta['v_codec'], 0) + 1
             status["analytics"]["a_codec"][meta['a_codec']] = status["analytics"]["a_codec"].get(meta['a_codec'], 0) + 1
             status["analytics"]["stability"]["success"] += 1
+            # 新增统计
+            isp_name = geo.get('isp', '未知')
+            status["analytics"]["isp"][isp_name] = status["analytics"]["isp"].get(isp_name, 0) + 1
+            protocol = parsed.scheme
+            if protocol in ('http', 'https'):
+                status["analytics"]["protocol"][protocol] += 1
+            br_value = float(meta['br'].replace('Mbps','').strip()) if 'Mbps' in meta['br'] else 0
+            if br_value < 1:
+                status["analytics"]["bitrate"]["<1M"] += 1
+            elif br_value < 5:
+                status["analytics"]["bitrate"]["1-5M"] += 1
+            elif br_value < 10:
+                status["analytics"]["bitrate"]["5-10M"] += 1
+            else:
+                status["analytics"]["bitrate"][">10M"] += 1
+
             score = h + speed * 5 - latency / 10
             status["summary_host"][hp]["score_sum"] += score
+            fps_display = f"{meta['fps']} fps" if meta['fps'] != "?" else "?"
             msg = (f"✅ {name}: {meta['icon']}{meta['res']} | 🎬{meta['v_codec']} | 🎵{meta['a_codec']} | "
-                   f"🎞️{meta['fps']} | 📊{speed}Mbps | ⏱️{latency}ms | 📍{geo['city']} | 🌐{hp}")
+                   f"🎞️{fps_display} | 📊{speed}Mbps | ⏱️{latency}ms | 📍{geo['city']} | 🌐{hp}")
             status["logs"].append(msg)
             write_log_csv({
                 "时间": get_now(),
@@ -275,7 +328,10 @@ def run_task(sub_id):
             "lat": {"<100ms": 0, "<500ms": 0, ">500ms": 0},
             "v_codec": {},
             "a_codec": {},
-            "stability": {"success": 0, "fail": 0, "banned": 0}
+            "stability": {"success": 0, "fail": 0, "banned": 0},
+            "isp": {},
+            "protocol": {"http": 0, "https": 0},
+            "bitrate": {"<1M": 0, "1-5M": 0, "5-10M": 0, ">10M": 0}
         }
     }
 
@@ -305,7 +361,6 @@ def run_task(sub_id):
         subs_status[sub_id]["running"] = False
         return
 
-    # 去重
     raw_channels = list(set(raw_channels))
     total_num = len(raw_channels)
     subs_status[sub_id]["total"] = total_num
@@ -319,10 +374,9 @@ def run_task(sub_id):
             valid_raw = []
             for f in futures:
                 if subs_status[sub_id].get("stop_requested"):
-                    # 如果停止，不再等待剩余结果，但已经提交的任务会继续执行
                     pass
                 try:
-                    res = f.result(timeout=30)  # 避免个别任务卡死
+                    res = f.result(timeout=30)
                     if res:
                         valid_raw.append(res)
                 except Exception as e:
@@ -337,7 +391,7 @@ def run_task(sub_id):
     duration = format_duration(time.time() - start_ts)
     update_ts = get_now()
 
-    # 生成报告
+    # 生成报告（新增统计）
     status["logs"].append(" ")
     status["logs"].append("📜 ==================== 探测结算报告 ====================")
     status["logs"].append(f"⏱️ 任务总耗时: {duration} | 有效源: {len(valid_list)} / 成功探测: {status['success']}")
@@ -357,6 +411,17 @@ def run_task(sub_id):
         status["logs"].append("🚫 --- 已熔断的接口清单 ---")
         for bh in status["blacklisted_hosts"]:
             status["logs"].append(f"❌ {bh} (连续10次失败)")
+    # 新增统计
+    status["logs"].append("📊 --- 运营商分布 ---")
+    isp_sorted = sorted(status["analytics"]["isp"].items(), key=lambda x: x[1], reverse=True)[:10]
+    for isp, count in isp_sorted:
+        status["logs"].append(f"📡 {isp}: {count}")
+    status["logs"].append("🌐 --- 协议比例 ---")
+    for proto, count in status["analytics"]["protocol"].items():
+        status["logs"].append(f"{proto.upper()}: {count}")
+    status["logs"].append("📈 --- 比特率分段 ---")
+    for br_range, count in status["analytics"]["bitrate"].items():
+        status["logs"].append(f"{br_range}: {count}")
     status["logs"].append("======================================================")
     status["logs"].append(f"🏁 任务完成时间: {get_now()}")
 
@@ -397,19 +462,15 @@ def run_task(sub_id):
 
 # ---------- 计划任务调度 ----------
 def clear_sub_jobs(sub_id):
-    """清除指定订阅的所有已调度任务"""
     for job in scheduler.get_jobs():
         if job.id.startswith(sub_id):
             scheduler.remove_job(job.id)
 
 def schedule_subscription(sub):
-    """根据订阅配置添加/更新调度任务"""
     sub_id = sub["id"]
     clear_sub_jobs(sub_id)
-
     if not sub.get("enabled", True):
-        return  # 禁用则不添加任何任务
-
+        return
     mode = sub.get("schedule_mode", "none")
     if mode == "none":
         return
@@ -446,7 +507,6 @@ def schedule_subscription(sub):
         )
 
 def reschedule_all():
-    """重新加载配置并调度所有订阅"""
     config = load_config()
     for sub in config["subscriptions"]:
         schedule_subscription(sub)
@@ -475,16 +535,37 @@ def sys_info():
 @app.route('/api/network_test')
 def network_test():
     res = {"v4": {"status": False, "ip": ""}, "v6": {"status": False, "ip": ""}}
+    
+    # IPv4 测试，使用多个备用服务
+    ipv4_services = [
+        "https://api4.ipify.org?format=json",
+        "https://api.ip.sb/ip?format=json",
+        "https://ipv4.icanhazip.com/"
+    ]
+    for service in ipv4_services:
+        try:
+            if service.endswith('.com/'):
+                r = requests.get(service, timeout=8)
+                ip = r.text.strip()
+                if ip:
+                    res["v4"] = {"status": True, "ip": ip}
+                    break
+            else:
+                r = requests.get(service, timeout=8).json()
+                ip = r.get('ip') or r.get('IPv4')
+                if ip:
+                    res["v4"] = {"status": True, "ip": ip}
+                    break
+        except:
+            continue
+
+    # IPv6 测试
     try:
-        r4 = requests.get("https://api4.ipify.org?format=json", timeout=5).json()
-        res["v4"] = {"status": True, "ip": r4['ip']}
-    except:
-        pass
-    try:
-        r6 = requests.get("https://api6.ipify.org?format=json", timeout=5).json()
+        r6 = requests.get("https://api6.ipify.org?format=json", timeout=8).json()
         res["v6"] = {"status": True, "ip": r6['ip']}
     except:
         pass
+
     return jsonify(res)
 
 @app.route('/api/subs', methods=['GET', 'POST'])
@@ -505,11 +586,12 @@ def handle_subs():
 
 @app.route('/api/status/<sub_id>')
 def get_status(sub_id):
+    limit = request.args.get('limit', default=150, type=int)
     if sub_id in subs_status:
         s = subs_status[sub_id]
         return jsonify({
             "running": s["running"],
-            "logs": s["logs"][-150:],
+            "logs": s["logs"][-limit:],
             "total": s["total"],
             "current": s["current"],
             "success": s["success"],
@@ -522,7 +604,7 @@ def get_status(sub_id):
             d = json.load(f)
             return jsonify({
                 "running": False,
-                "logs": d["logs"][-150:],
+                "logs": d["logs"][-limit:],
                 "total": d["stats"]["total"],
                 "current": d["stats"]["current"],
                 "success": d["stats"]["success"],
@@ -574,7 +656,6 @@ def delete_sub(sub_id):
     config = load_config()
     config["subscriptions"] = [s for s in config["subscriptions"] if s["id"] != sub_id]
     save_config(config)
-    # 删除任务后清除其调度
     clear_sub_jobs(sub_id)
     return jsonify({"status": "ok"})
 
