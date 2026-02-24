@@ -4,64 +4,148 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EPG聚合管理 - M3U Checker</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f1f5f9; padding: 30px; }
-        .glass-card { background: rgba(255,255,255,0.85); backdrop-filter: blur(15px); border-radius: 24px; border: 1px solid rgba(255,255,255,0.4); box-shadow: 0 15px 35px rgba(0,0,0,0.04); margin-bottom: 25px; padding: 25px; }
-        .btn-grad { border: none; color: white; border-radius: 16px; font-weight: 700; padding: 12px 22px; transition: 0.3s; box-shadow: 0 4px 15px rgba(0,0,0,0.15); }
-        .btn-primary-grad { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); }
-        .btn-success-grad { background: linear-gradient(90deg, #10b981 0%, #34d399 100%); }
-        .btn-danger-grad { background: linear-gradient(90deg, #dc2626 0%, #f43f5e 100%); }
-        .link-item { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-        .link-item input { flex: 1; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 8px; }
-        .back-btn { margin-bottom: 20px; }
-        .log-modal-content { background: #1e1e1e; color: #d4d4d4; font-family: 'Fira Code', monospace; font-size: 12px; padding: 20px; border-radius: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+        :root {
+            --primary-grad: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            --success-grad: linear-gradient(90deg, #10b981 0%, #34d399 100%);
+            --danger-grad: linear-gradient(90deg, #dc2626 0%, #f43f5e 100%);
+            --glass: rgba(255, 255, 255, 0.85);
+        }
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background: #f1f5f9;
+            min-height: 100vh;
+            padding: 30px;
+            color: #1e293b;
+        }
+        .glass-card {
+            background: var(--glass);
+            backdrop-filter: blur(15px);
+            border-radius: 24px;
+            border: 1px solid rgba(255,255,255,0.4);
+            box-shadow: 0 15px 35px rgba(0,0,0,0.04);
+            margin-bottom: 25px;
+            padding: 25px;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        .glass-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.08);
+        }
+        .btn-grad {
+            border: none;
+            color: white;
+            border-radius: 16px;
+            font-weight: 700;
+            padding: 12px 22px;
+            transition: 0.3s;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-grad:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+            color: white;
+        }
+        .btn-primary-grad { background: var(--primary-grad); }
+        .btn-success-grad { background: var(--success-grad); }
+        .btn-danger-grad { background: var(--danger-grad); }
+        .btn-secondary-custom { background: #64748b; color: white; }
+        .link-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .link-item input {
+            flex: 1;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 8px;
+        }
+        .log-modal-content {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Fira Code', monospace;
+            font-size: 12px;
+            padding: 20px;
+            border-radius: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        .table {
+            background: transparent;
+        }
+        .table thead th {
+            border-bottom: 2px solid rgba(0,0,0,0.05);
+            font-weight: 600;
+            color: #475569;
+        }
+        .table tbody tr:hover {
+            background: rgba(79, 70, 229, 0.05);
+        }
+        .badge-last-update {
+            background: #e2e8f0;
+            color: #1e293b;
+            padding: 4px 8px;
+            border-radius: 20px;
+            font-size: 11px;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="d-flex justify-content-between align-items-center mb-4 back-btn">
-            <h1 class="fw-800"><i class="bi bi-calendar-week me-2"></i>EPG聚合管理</h1>
-            <button class="btn btn-grad btn-primary-grad" onclick="location.href='/'">
+    <div class="container animate__animated animate__fadeIn">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1 class="fw-800"><i class="bi bi-calendar-week me-2" style="background: var(--primary-grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent;"></i>EPG聚合管理</h1>
+            <button class="btn btn-grad btn-secondary-custom" onclick="location.href='/'">
                 <i class="bi bi-arrow-left me-2"></i>返回检测
             </button>
         </div>
 
         <div class="glass-card">
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h5 class="fw-bold">EPG聚合任务列表</h5>
-                <button class="btn btn-grad btn-primary-grad" id="newEpgAggBtn">新建EPG聚合</button>
+                <h5 class="fw-bold"><i class="bi bi-list-task me-2"></i>EPG聚合任务列表</h5>
+                <button class="btn btn-grad btn-primary-grad" id="newEpgAggBtn"><i class="bi bi-plus-circle"></i> 新建EPG聚合</button>
             </div>
-            <table class="table table-hover align-middle">
-                <thead>
-                    <tr>
-                        <th>名称</th>
-                        <th>源数量</th>
-                        <th>缓存天数</th>
-                        <th>更新间隔</th>
-                        <th>最后更新</th>
-                        <th>链接</th>
-                        <th>日志</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="epgAggList"></tbody>
-            </table>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>名称</th>
+                            <th>源数量</th>
+                            <th>缓存天数</th>
+                            <th>更新间隔</th>
+                            <th>最后更新</th>
+                            <th>链接</th>
+                            <th>日志</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="epgAggList"></tbody>
+                </table>
+            </div>
         </div>
 
         <!-- EPG文件链接展示区 -->
         <div class="glass-card mt-4" id="linksPanel" style="display: none;">
-            <h5 class="fw-bold mb-3">EPG文件链接</h5>
+            <h5 class="fw-bold mb-3"><i class="bi bi-link-45deg me-2"></i>EPG文件链接</h5>
             <div class="link-item">
-                <span>XML:</span>
+                <span class="badge bg-primary">XML</span>
                 <input type="text" id="epgXmlLink" readonly class="form-control">
-                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgXmlLink')">复制</button>
+                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgXmlLink')"><i class="bi bi-clipboard"></i> 复制</button>
             </div>
             <div class="link-item">
-                <span>XML.GZ:</span>
+                <span class="badge bg-secondary">GZ</span>
                 <input type="text" id="epgGzLink" readonly class="form-control">
-                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgGzLink')">复制</button>
+                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgGzLink')"><i class="bi bi-clipboard"></i> 复制</button>
             </div>
         </div>
     </div>
@@ -69,8 +153,8 @@
     <!-- 编辑模态框 -->
     <div class="modal fade" id="editModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content p-4" style="border-radius: 35px;">
-                <h5 class="fw-800 mb-4 text-center">EPG聚合配置</h5>
+            <div class="modal-content p-4" style="border-radius: 35px; background: var(--glass); backdrop-filter: blur(15px);">
+                <h5 class="fw-800 mb-4 text-center"><i class="bi bi-gear me-2"></i>EPG聚合配置</h5>
                 <input type="hidden" id="editId">
                 <div class="mb-3">
                     <label class="fw-bold small text-muted">名称</label>
@@ -95,8 +179,8 @@
                     <label class="form-check-label fw-bold">启用自动更新</label>
                 </div>
                 <div class="d-flex justify-content-between pt-3 border-top">
-                    <button class="btn btn-outline-danger fw-bold" id="delBtn">删除</button>
-                    <button class="btn btn-grad btn-primary-grad px-5" id="saveBtn">保存</button>
+                    <button class="btn btn-outline-danger fw-bold" id="delBtn"><i class="bi bi-trash me-2"></i>删除</button>
+                    <button class="btn btn-grad btn-primary-grad px-5" id="saveBtn"><i class="bi bi-check-circle me-2"></i>保存</button>
                 </div>
             </div>
         </div>
@@ -106,11 +190,11 @@
     <div class="modal fade" id="logModal" tabindex="-1">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content" style="border-radius: 35px;">
-                <div class="modal-header">
-                    <h5 class="modal-title">EPG聚合任务日志</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <div class="modal-header" style="background: var(--primary-grad); color: white;">
+                    <h5 class="modal-title"><i class="bi bi-file-text me-2"></i>EPG聚合任务日志</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body">
+                <div class="modal-body p-0">
                     <div id="logContent" class="log-modal-content"></div>
                 </div>
             </div>
@@ -137,21 +221,21 @@
                 const updateTime = epg.last_update || '从未';
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${epg.name}</td>
-                    <td>${sources.length}</td>
+                    <td><span class="fw-bold">${epg.name}</span></td>
+                    <td><span class="badge bg-info">${sources.length}</span></td>
                     <td>${epg.cache_days || 3}</td>
                     <td>${epg.update_interval || 24} 小时</td>
-                    <td>${updateTime}</td>
+                    <td><span class="badge-last-update">${updateTime}</span></td>
                     <td>
-                        <button class="btn btn-sm btn-outline-info me-1" onclick="showLinks('${epg.id}')"><i class="bi bi-link"></i></button>
+                        <button class="btn btn-sm btn-outline-info" onclick="showLinks('${epg.id}')" title="查看链接"><i class="bi bi-link"></i></button>
                     </td>
                     <td>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="showLog('${epg.id}')"><i class="bi bi-file-text"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="showLog('${epg.id}')" title="查看日志"><i class="bi bi-file-text"></i></button>
                     </td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary me-2" onclick="editEpgAggregate('${epg.id}')"><i class="bi bi-pencil"></i></button>
-                        <button class="btn btn-sm btn-outline-success me-2" onclick="runEpgAggregate('${epg.id}')"><i class="bi bi-play"></i></button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteEpgAggregate('${epg.id}')"><i class="bi bi-trash"></i></button>
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="editEpgAggregate('${epg.id}')" title="编辑"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-success me-1" onclick="runEpgAggregate('${epg.id}')" title="运行"><i class="bi bi-play"></i></button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteEpgAggregate('${epg.id}')" title="删除"><i class="bi bi-trash"></i></button>
                     </td>
                 `;
                 tbody.appendChild(tr);
