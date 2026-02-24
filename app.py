@@ -517,7 +517,7 @@ def run_task(sub_id):
 
     status["running"] = False
 
-# ---------- 聚合任务 ----------
+# ---------- 聚合任务（增强版，支持分组）----------
 def run_aggregate(agg_id):
     config = load_config()
     agg = next((a for a in config.get("aggregates", []) if a["id"] == agg_id), None)
@@ -541,36 +541,55 @@ def run_aggregate(agg_id):
                 item_copy["name"] = std_name
                 channel_map[std_name] = item_copy
 
-    # 读取 demo.txt 模板顺序
+    # 读取 demo.txt 获取顺序和分组信息
     ordered_names = []
+    group_map = {}  # 标准名 -> 分组名称
     if os.path.exists(DEMO_FILE):
+        current_group = "未分组"
         with open(DEMO_FILE, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                if ',#' in line:
-                    continue  # 分类行跳过
-                ordered_names.append(line)
+                if ',#genre#' in line:
+                    # 分类行，如 "📺央视频道,#genre#"
+                    current_group = line.split(',')[0].strip()
+                else:
+                    # 普通频道行
+                    name = line
+                    ordered_names.append(name)
+                    group_map[name] = current_group
     else:
+        # 无 demo.txt，按标准名排序
         ordered_names = sorted(channel_map.keys())
 
     # 按顺序生成最终列表
     final_list = []
     for name in ordered_names:
         if name in channel_map:
-            final_list.append(channel_map[name])
+            item = channel_map[name]
+            # 添加分组信息
+            item["group"] = group_map.get(name, "未分组")
+            final_list.append(item)
 
     # 生成输出文件
     update_ts = get_now()
     epg = config["settings"]["epg_url"]
-    logo = config["settings"]["logo_base"]
+    logo_base = config["settings"]["logo_base"]
     m3u_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.m3u")
     txt_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.txt")
+    
+    # 生成带分组的 M3U
     with open(m3u_path, 'w', encoding='utf-8') as fm:
         fm.write(f"#EXTM3U x-tvg-url=\"{epg}\"\n# Updated: {update_ts}\n")
         for c in final_list:
-            fm.write(f"#EXTINF:-1 tvg-logo=\"{logo}{c['name']}.png\",{c['name']}\n{c['url']}\n")
+            tvg_name = c['name']  # 标准名称
+            tvg_logo = f"{logo_base}{tvg_name}.png"
+            group_title = c.get('group', '未分组')
+            fm.write(f"#EXTINF:-1 tvg-name=\"{tvg_name}\" tvg-logo=\"{tvg_logo}\" group-title=\"{group_title}\",{tvg_name}\n")
+            fm.write(f"{c['url']}\n")
+
+    # 生成 TXT（保持原有简单格式）
     with open(txt_path, 'w', encoding='utf-8') as ft:
         ft.write(f"# Updated: {update_ts}\n")
         for c in final_list:
