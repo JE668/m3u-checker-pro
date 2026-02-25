@@ -728,10 +728,9 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 except Exception as e:
                     log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
 
-            # 尝试解析 XML（使用 recover 模式容错）
+            # 尝试解析 XML（标准库，不支持 recover 参数，直接解析）
             try:
-                parser = ET.XMLParser(recover=True)
-                tree = ET.parse(BytesIO(content), parser=parser)
+                tree = ET.parse(BytesIO(content))
                 root = tree.getroot()
             except Exception as e:
                 log(f"❌ 解析 XML 失败: {str(e)}")
