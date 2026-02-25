@@ -733,8 +733,12 @@ def run_aggregate(agg_id, auto=False):
         log(f"📋 聚合名称: {agg.name}")
         log(f"📦 包含订阅: {', '.join(agg.subscription_ids or [])}")
 
-        results = session.query(ProbeResult).filter(ProbeResult.sub_id.in_(agg.subscription_ids)).all()
-        log(f"📊 共从数据库读取 {len(results)} 条原始探测结果")
+        # 逐个订阅查询，避免 in_ 可能的问题
+        results = []
+        for sid in agg.subscription_ids or []:
+            sub_results = session.query(ProbeResult).filter(ProbeResult.sub_id == sid).all()
+            results.extend(sub_results)
+        log(f"📊 从数据库读取 {len(results)} 条原始探测结果")
 
         channel_map = {}
         for r in results:
