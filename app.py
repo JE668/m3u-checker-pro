@@ -401,13 +401,13 @@ def add_pending_channel(raw_name, sub_id):
         session.commit()
 
 def append_alias(main_name, aliases):
+    global ALIAS_CACHE, ALIAS_MTIME  # 声明全局，放在函数开头
     """向 alias.txt 添加别名规则：如果主名已存在，则合并别名（去重）到该行；否则追加新行。"""
     with file_lock:
         if not os.path.exists(ALIAS_FILE):
             # 文件不存在，直接写入
             with open(ALIAS_FILE, 'w', encoding='utf-8') as f:
                 f.write(f"{main_name}," + ",".join(aliases) + "\n")
-            global ALIAS_CACHE, ALIAS_MTIME
             ALIAS_CACHE = None
             ALIAS_MTIME = None
             return
@@ -438,8 +438,6 @@ def append_alias(main_name, aliases):
         # 写回文件
         with open(ALIAS_FILE, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines) + "\n")
-    # 清除缓存，强制重新加载
-    global ALIAS_CACHE, ALIAS_MTIME
     ALIAS_CACHE = None
     ALIAS_MTIME = None
 
