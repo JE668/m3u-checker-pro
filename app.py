@@ -778,32 +778,24 @@ def run_epg_aggregate(epg_agg_id, auto=False):
     for prog in programmes.values():
         new_root.append(prog)
 
-    # 生成 XML 文件
+    # 生成 XML 文件（不生成 GZ）
     update_ts = get_now()
     xml_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}.xml")
-    gz_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}.xml.gz")
     
     # 写入 XML
     tree = ET.ElementTree(new_root)
     tree.write(xml_path, encoding='utf-8', xml_declaration=True)
 
-    # 写入 GZ
-    with open(xml_path, 'rb') as f_in:
-        with gzip.open(gz_path, 'wb') as f_out:
-            f_out.writelines(f_in)
-
     log(f"💾 XML 已保存: {xml_path}")
-    log(f"💾 GZ 已保存: {gz_path}")
 
-    # 记录状态
+    # 记录状态（不再包含 GZ 文件）
     epg_status = {
         "update_time": update_ts,
         "total": len(programmes),
         "channels": len(channels_dict),
         "sources": epg_agg['sources'],
         "files": {
-            "xml": f"/epg/{epg_agg_id}.xml",
-            "gz": f"/epg/{epg_agg_id}.xml.gz"
+            "xml": f"/epg/{epg_agg_id}.xml"
         }
     }
     status_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}_status.json")
@@ -1160,21 +1152,48 @@ def delete_epg_aggregate(epg_id):
     save_config(config)
     return jsonify({"status": "ok"})
 
-# ---------- EPG 文件路由（支持 .xml 和 .xml.gz）----------
+# ---------- EPG 文件路由 ----------
 @app.route('/epg/<epg_id>.xml')
 def get_epg_xml(epg_id):
     filename = f"epg_{epg_id}.xml"
     return send_from_directory(OUTPUT_DIR, filename)
 
-@app.route('/epg/<epg_id>.xml.gz')
-def get_epg_xml_gz(epg_id):
-    filename = f"epg_{epg_id}.xml.gz"
-    return send_from_directory(OUTPUT_DIR, filename)
-
-# 保留旧版 .gz 路由，重定向到 .xml.gz 以兼容旧链接
-@app.route('/epg/<epg_id>.gz')
-def get_epg_gz_redirect(epg_id):
-    return redirect(f"/epg/{epg_id}.xml.gz", code=301)
+# ---------- EPG 频道检查 API ----------
+@app.route('/api/epg_check/<epg_id>')
+def epg_check(epg_id):
+    channel = request.args.get('channel', '').strip()
+    if not channel:
+        return jsonify({"error": "频道名称不能为空"}), 400
+    xml_path = os.path.join(OUTPUT_DIR, f"epg_{epg_id}.xml")
+    if not os.path.exists(xml_path):
+        return jsonify({"exists": False, "message": "EPG 文件不存在"})
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        # 查找匹配的频道（忽略大小写，部分匹配）
+        channels = []
+        for ch in root.findall('channel'):
+            ch_id = ch.get('id', '')
+            if channel.lower() in ch_id.lower():
+                channels.append(ch_id)
+        # 查找匹配的节目
+        programmes = []
+        for prog in root.findall('programme'):
+            prog_ch = prog.get('channel', '')
+            if channel.lower() in prog_ch.lower():
+                programmes.append({
+                    "channel": prog_ch,
+                    "start": prog.get('start'),
+                    "title": prog.findtext('title', '')
+                })
+        return jsonify({
+            "channel_exists": len(channels) > 0,
+            "programme_count": len(programmes),
+            "matched_channels": channels,
+            "matched_programmes_sample": programmes[:5]  # 只返回前5个作为示例
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ---------- 启动时初始化调度 ----------
 with app.app_context():
