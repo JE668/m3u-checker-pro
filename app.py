@@ -711,7 +711,7 @@ def run_task(sub_id):
         for agg in session.query(Aggregate).filter(Aggregate.subscription_ids.contains(sub_id)).all():
             threading.Thread(target=run_aggregate, args=(agg.id,), kwargs={"auto": True}).start()
 
-# ---------- 聚合任务（从数据库读取探测结果）----------
+# ---------- 聚合任务（保留所有URL，并将未在demo.txt中的频道归入“其他频道”）----------
 def run_aggregate(agg_id, auto=False):
     if aggregates_status.get(agg_id, {}).get("running"):
         return
@@ -733,25 +733,31 @@ def run_aggregate(agg_id, auto=False):
         log(f"📋 聚合名称: {agg.name}")
         log(f"📦 包含订阅: {', '.join(agg.subscription_ids or [])}")
 
-        # 逐个订阅查询，避免 in_ 可能的问题
+        # 获取所有探测结果
         results = []
         for sid in agg.subscription_ids or []:
             sub_results = session.query(ProbeResult).filter(ProbeResult.sub_id == sid).all()
             results.extend(sub_results)
         log(f"📊 从数据库读取 {len(results)} 条原始探测结果")
 
+        # 按标准名称分组，每个标准名称对应一个列表
         channel_map = {}
         for r in results:
             std_name, matched = match_channel_name(r.channel_name)
-            if std_name not in channel_map or r.score > channel_map[std_name]['score']:
-                channel_map[std_name] = {
-                    "name": std_name,
-                    "url": r.url,
-                    "score": r.score,
-                    "res_tag": r.res_tag
-                }
+            if std_name not in channel_map:
+                channel_map[std_name] = []
+            channel_map[std_name].append({
+                "name": std_name,
+                "url": r.url,
+                "score": r.score,
+                "res_tag": r.res_tag
+            })
 
-        log(f"📊 聚合后得到 {len(channel_map)} 个标准频道")
+        # 对每个标准名称下的URL按评分降序排序
+        for name in channel_map:
+            channel_map[name].sort(key=lambda x: x['score'], reverse=True)
+
+        log(f"📊 聚合后得到 {len(channel_map)} 个标准频道，共计 {sum(len(v) for v in channel_map.values())} 个URL")
 
     # 读取 demo.txt 获取顺序和分组信息
     ordered_names = []
@@ -772,18 +778,30 @@ def run_aggregate(agg_id, auto=False):
                     group_map[name] = current_group
         log(f"📋 从 demo.txt 加载了 {len(ordered_names)} 个频道顺序")
     else:
+        # 如果没有demo.txt，则使用所有标准名称按字母排序
         ordered_names = sorted(channel_map.keys())
         log(f"📋 未找到 demo.txt，使用字母顺序")
 
+    # 按顺序生成最终列表（先处理 demo.txt 中的频道）
     final_list = []
     for name in ordered_names:
         if name in channel_map:
-            item = channel_map[name]
-            item["group"] = group_map.get(name, "未分组")
-            final_list.append(item)
+            for item in channel_map[name]:
+                item["group"] = group_map.get(name, "未分组")
+                final_list.append(item)
+
+    # 处理不在 demo.txt 中的频道，归入“其他频道”分组
+    remaining_names = set(channel_map.keys()) - set(ordered_names)
+    if remaining_names:
+        log(f"📦 发现 {len(remaining_names)} 个频道不在 demo.txt 中，将归入“其他频道”分组")
+        for name in sorted(remaining_names):  # 按字母排序
+            for item in channel_map[name]:
+                item["group"] = "其他频道"
+                final_list.append(item)
 
     log(f"✅ 最终生成 {len(final_list)} 个有效链接")
 
+    # 确定使用的 EPG URL
     config = load_config()
     epg_url = config.get("settings", {}).get("epg_url", "")
     epg_agg_id = agg.epg_aggregate_id
@@ -791,13 +809,15 @@ def run_aggregate(agg_id, auto=False):
         with db_session() as session:
             epg_agg = session.get(EPGAggregate, epg_agg_id)
             if epg_agg:
-                epg_url = f"{request.host_url.rstrip('/')}/epg/{epg_agg_id}.xml"
+                # 使用相对路径，避免 request 上下文问题
+                epg_url = f"/epg/{epg_agg_id}.xml"
                 log(f"📺 使用 EPG 聚合: {epg_agg.name} -> {epg_url}")
             else:
                 log(f"⚠️ 指定的 EPG 聚合不存在，使用全局 EPG")
     else:
         log(f"📺 使用全局 EPG: {epg_url}")
 
+    # 生成输出文件
     update_ts = get_now()
     logo_base = config.get("settings", {}).get("logo_base", "")
     m3u_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.m3u")
@@ -819,6 +839,7 @@ def run_aggregate(agg_id, auto=False):
 
     log(f"💾 文件已写入: {m3u_path}, {txt_path}")
 
+    # 更新聚合最后更新时间
     with db_session() as session:
         agg = session.get(Aggregate, agg_id)
         if agg:
