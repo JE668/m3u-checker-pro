@@ -29,7 +29,7 @@ api_lock, log_lock, file_lock = threading.Lock(), threading.Lock(), threading.Lo
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# ---------- 别名加载与匹配 ----------
+# ---------- 别名加载与匹配（增强版，支持正则）----------
 ALIAS_CACHE = None
 ALIAS_MTIME = None
 
@@ -54,6 +54,7 @@ def load_aliases():
             for a in alias_list:
                 if a.startswith('re:'):
                     try:
+                        # 预编译正则，忽略大小写
                         compiled.append(('re', re.compile(a[3:], re.IGNORECASE)))
                     except:
                         continue
@@ -674,7 +675,7 @@ def run_aggregate(agg_id, auto=False):
     log(f"🏁 聚合任务完成，耗时 {format_duration(time.time() - start_time)}")
     aggregates_status[agg_id]["running"] = False
 
-# ---------- EPG 聚合 ----------
+# ---------- EPG 聚合（增强版：自动解压 gzip、错误恢复）----------
 def run_epg_aggregate(epg_agg_id, auto=False):
     if epg_aggregates_status.get(epg_agg_id, {}).get("running"):
         return
@@ -716,7 +717,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 continue
             content = resp.content
 
-            # 处理可能为 gzip 压缩的内容
+            # 处理可能为 gzip 压缩的内容（根据 URL 后缀或 Content-Encoding 头部）
             is_gz = source_url.endswith('.gz') or resp.headers.get('Content-Encoding') == 'gzip'
             if is_gz:
                 try:
@@ -728,9 +729,10 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 except Exception as e:
                     log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
 
-            # 尝试解析 XML
+            # 尝试解析 XML（使用 recover 模式容错）
             try:
-                tree = ET.parse(BytesIO(content))
+                parser = ET.XMLParser(recover=True)
+                tree = ET.parse(BytesIO(content), parser=parser)
                 root = tree.getroot()
             except Exception as e:
                 log(f"❌ 解析 XML 失败: {str(e)}")
@@ -759,19 +761,6 @@ def run_epg_aggregate(epg_agg_id, auto=False):
 
     # 构建新的 XML
     new_root = ET.Element('tv')
-    # 添加频道信息（简单合并所有源中的 channel）
-    channels_seen = set()
-    for prog in programmes.values():
-        channel_id = prog.get('channel')
-        if channel_id not in channels_seen:
-            # 从原 XML 中找 channel 元素，可能需要保留
-            # 简单做法：从任意源复制 channel 元素
-            # 这里我们暂时不添加 channel，因为许多播放器不依赖 channel 定义也可以工作
-            channels_seen.add(channel_id)
-    # 为了完整性，我们可以从原树中提取 channel 并去重
-    # 更完善的实现：遍历所有源，收集 channel 元素，去重后添加
-    # 为简化，此处省略，用户可自行添加 channel 定义
-
     # 将所有节目添加到新树
     for prog in programmes.values():
         new_root.append(prog)
@@ -810,7 +799,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
     log(f"🏁 EPG 聚合任务完成")
     epg_aggregates_status[epg_agg_id]["running"] = False
 
-# ---------- 计划任务调度 ----------
+# ---------- 计划任务调度（保持不变）----------
 def clear_sub_jobs(sub_id):
     for job in scheduler.get_jobs():
         if job.id.startswith(sub_id):
