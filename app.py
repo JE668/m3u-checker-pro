@@ -54,7 +54,6 @@ def load_aliases():
             for a in alias_list:
                 if a.startswith('re:'):
                     try:
-                        # 预编译正则，忽略大小写
                         compiled.append(('re', re.compile(a[3:], re.IGNORECASE)))
                     except:
                         continue
@@ -799,7 +798,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
     log(f"🏁 EPG 聚合任务完成")
     epg_aggregates_status[epg_agg_id]["running"] = False
 
-# ---------- 计划任务调度（保持不变）----------
+# ---------- 计划任务调度 ----------
 def clear_sub_jobs(sub_id):
     for job in scheduler.get_jobs():
         if job.id.startswith(sub_id):
@@ -1146,12 +1145,21 @@ def delete_epg_aggregate(epg_id):
     save_config(config)
     return jsonify({"status": "ok"})
 
-@app.route('/epg/<epg_id>.<ext>')
-def get_epg_file(epg_id, ext):
-    if ext not in ['xml', 'gz']:
-        return "Not found", 404
-    filename = f"epg_{epg_id}.xml" if ext == 'xml' else f"epg_{epg_id}.xml.gz"
+# ---------- EPG 文件路由（支持 .xml 和 .xml.gz）----------
+@app.route('/epg/<epg_id>.xml')
+def get_epg_xml(epg_id):
+    filename = f"epg_{epg_id}.xml"
     return send_from_directory(OUTPUT_DIR, filename)
+
+@app.route('/epg/<epg_id>.xml.gz')
+def get_epg_xml_gz(epg_id):
+    filename = f"epg_{epg_id}.xml.gz"
+    return send_from_directory(OUTPUT_DIR, filename)
+
+# 保留旧版 .gz 路由，重定向到 .xml.gz 以兼容旧链接
+@app.route('/epg/<epg_id>.gz')
+def get_epg_gz_redirect(epg_id):
+    return redirect(f"/epg/{epg_id}.xml.gz", code=301)
 
 # ---------- 启动时初始化调度 ----------
 with app.app_context():
