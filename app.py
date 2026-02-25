@@ -43,14 +43,14 @@ class Subscription(Base):
     schedule_mode = Column(String(20), default='none')
     fixed_times = Column(String(500), default='')
     interval_hours = Column(Integer, default=1)
-    res_filter = Column(JSON, default=['sd','720p','1080p','4k','8k'])  # 存储为JSON数组
+    res_filter = Column(JSON, default=['sd','720p','1080p','4k','8k'])
     created_at = Column(DateTime, default=datetime.datetime.now)
 
 class Aggregate(Base):
     __tablename__ = 'aggregates'
     id = Column(String(50), primary_key=True)
     name = Column(String(200), nullable=False)
-    subscription_ids = Column(JSON)  # 存储订阅ID列表
+    subscription_ids = Column(JSON)
     strategy = Column(String(20), default='best_score')
     enabled = Column(Boolean, default=True)
     epg_aggregate_id = Column(String(50), nullable=True)
@@ -61,7 +61,7 @@ class EPGAggregate(Base):
     __tablename__ = 'epg_aggregates'
     id = Column(String(50), primary_key=True)
     name = Column(String(200), nullable=False)
-    sources = Column(JSON)  # EPG源URL列表
+    sources = Column(JSON)
     cache_days = Column(Integer, default=3)
     update_interval = Column(Integer, default=24)
     enabled = Column(Boolean, default=True)
@@ -80,9 +80,8 @@ class ProbeResult(Base):
     channel_name = Column(String(500), nullable=False)
     url = Column(Text, nullable=False)
     score = Column(Float, default=0)
-    res_tag = Column(String(20))  # sd, 720p, 1080p, 4k, 8k
+    res_tag = Column(String(20))
     probe_time = Column(DateTime, default=datetime.datetime.now, index=True)
-    # 可扩展字段：延迟、速度等
 
 class PendingChannel(Base):
     __tablename__ = 'pending_channels'
@@ -90,101 +89,20 @@ class PendingChannel(Base):
     raw_name = Column(String(500), unique=True, nullable=False)
     count = Column(Integer, default=1)
     first_seen = Column(DateTime, default=datetime.datetime.now)
-    sub_ids = Column(JSON)  # 记录出现过的订阅ID列表
+    sub_ids = Column(JSON)
 
 # 创建表
 Base.metadata.create_all(bind=engine)
 
-# ---------- 旧数据迁移辅助函数 ----------
+# ---------- 旧数据迁移辅助函数（已删除JSON文件，保留但不再使用）----------
 def migrate_from_json():
-    """检测旧JSON文件，导入到数据库，然后备份原文件"""
-    config_file = os.path.join(DATA_DIR, "config.json")
-    pending_file = os.path.join(DATA_DIR, "pending.json")
-    
-    # 迁移 config.json
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                old_config = json.load(f)
-            # 导入 subscriptions
-            for sub in old_config.get('subscriptions', []):
-                if not db_session.get(Subscription, sub['id']):
-                    db_session.add(Subscription(
-                        id=sub['id'],
-                        name=sub['name'],
-                        url=sub['url'],
-                        threads=sub.get('threads', 10),
-                        enabled=sub.get('enabled', True),
-                        schedule_mode=sub.get('schedule_mode', 'none'),
-                        fixed_times=sub.get('fixed_times', ''),
-                        interval_hours=sub.get('interval_hours', 1),
-                        res_filter=sub.get('res_filter', ['sd','720p','1080p','4k','8k'])
-                    ))
-            # 导入 aggregates
-            for agg in old_config.get('aggregates', []):
-                if not db_session.get(Aggregate, agg['id']):
-                    db_session.add(Aggregate(
-                        id=agg['id'],
-                        name=agg['name'],
-                        subscription_ids=agg.get('subscription_ids', []),
-                        strategy=agg.get('strategy', 'best_score'),
-                        enabled=agg.get('enabled', True),
-                        epg_aggregate_id=agg.get('epg_aggregate_id'),
-                        last_update=None
-                    ))
-            # 导入 epg_aggregates
-            for epg in old_config.get('epg_aggregates', []):
-                if not db_session.get(EPGAggregate, epg['id']):
-                    db_session.add(EPGAggregate(
-                        id=epg['id'],
-                        name=epg['name'],
-                        sources=epg.get('sources', []),
-                        cache_days=epg.get('cache_days', 3),
-                        update_interval=epg.get('update_interval', 24),
-                        enabled=epg.get('enabled', True),
-                        last_update=None
-                    ))
-            # 导入 settings
-            settings = old_config.get('settings', {})
-            for key, value in settings.items():
-                if not db_session.get(Setting, key):
-                    db_session.add(Setting(key=key, value=str(value)))
-            db_session.commit()
-            # 重命名旧配置文件，防止重复导入
-            os.rename(config_file, config_file + '.bak')
-            print("配置数据迁移完成")
-        except Exception as e:
-            print(f"迁移 config.json 失败: {e}")
-
-    # 迁移 pending.json
-    if os.path.exists(pending_file):
-        try:
-            with open(pending_file, 'r', encoding='utf-8') as f:
-                old_pending = json.load(f)
-            for raw_name, info in old_pending.items():
-                if not db_session.query(PendingChannel).filter_by(raw_name=raw_name).first():
-                    db_session.add(PendingChannel(
-                        raw_name=raw_name,
-                        count=info.get('count', 1),
-                        first_seen=datetime.datetime.strptime(info['first_seen'], '%Y-%m-%d %H:%M:%S') if 'first_seen' in info else datetime.datetime.now(),
-                        sub_ids=info.get('sub_ids', [])
-                    ))
-            db_session.commit()
-            os.rename(pending_file, pending_file + '.bak')
-            print("待处理频道数据迁移完成")
-        except Exception as e:
-            print(f"迁移 pending.json 失败: {e}")
-
-# 首次启动时执行迁移
-if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
-    migrate_from_json()
+    pass  # 已手动删除JSON文件，无需迁移
 
 # ---------- 别名加载与匹配 ----------
 ALIAS_CACHE = None
 ALIAS_MTIME = None
 
 def load_aliases():
-    """加载 alias.txt，返回 {标准名称: [编译好的模式列表]}"""
     global ALIAS_CACHE, ALIAS_MTIME
     if not os.path.exists(ALIAS_FILE):
         return {}
@@ -215,7 +133,6 @@ def load_aliases():
     return aliases
 
 def match_channel_name(raw_name):
-    """根据别名库匹配标准名称，返回 (标准名, 是否匹配)"""
     aliases = load_aliases()
     raw_lower = raw_name.lower()
     for main_name, patterns in aliases.items():
@@ -223,7 +140,7 @@ def match_channel_name(raw_name):
             if ptype == 'plain':
                 if p in raw_lower:
                     return main_name, True
-            else:  # regex
+            else:
                 if p.search(raw_name):
                     return main_name, True
     return raw_name, False
@@ -238,6 +155,106 @@ def get_today():
 def format_duration(seconds):
     return str(datetime.timedelta(seconds=int(seconds)))
 
+def load_config():
+    """从数据库加载配置，始终返回包含默认 settings 的字典"""
+    config = {
+        "subscriptions": [],
+        "aggregates": [],
+        "epg_aggregates": [],
+        "settings": {
+            "use_hwaccel": True,
+            "epg_url": "http://epg.51zmt.top:12489/e.xml",
+            "logo_base": "https://live.fanmingming.com/tv/"
+        }
+    }
+    with db_session() as session:
+        for sub in session.query(Subscription).all():
+            config["subscriptions"].append({
+                "id": sub.id,
+                "name": sub.name,
+                "url": sub.url,
+                "threads": sub.threads,
+                "enabled": sub.enabled,
+                "schedule_mode": sub.schedule_mode,
+                "fixed_times": sub.fixed_times,
+                "interval_hours": sub.interval_hours,
+                "res_filter": sub.res_filter
+            })
+        for agg in session.query(Aggregate).all():
+            config["aggregates"].append({
+                "id": agg.id,
+                "name": agg.name,
+                "subscription_ids": agg.subscription_ids,
+                "strategy": agg.strategy,
+                "enabled": agg.enabled,
+                "epg_aggregate_id": agg.epg_aggregate_id
+            })
+        for epg in session.query(EPGAggregate).all():
+            config["epg_aggregates"].append({
+                "id": epg.id,
+                "name": epg.name,
+                "sources": epg.sources,
+                "cache_days": epg.cache_days,
+                "update_interval": epg.update_interval,
+                "enabled": epg.enabled
+            })
+        for setting in session.query(Setting).all():
+            config["settings"][setting.key] = setting.value
+    return config
+
+def save_config(config):
+    """保存配置到数据库"""
+    with db_session() as session:
+        # 更新 subscriptions
+        for sub_data in config["subscriptions"]:
+            sub = session.get(Subscription, sub_data['id'])
+            if sub:
+                sub.name = sub_data['name']
+                sub.url = sub_data['url']
+                sub.threads = sub_data.get('threads', 10)
+                sub.enabled = sub_data.get('enabled', True)
+                sub.schedule_mode = sub_data.get('schedule_mode', 'none')
+                sub.fixed_times = sub_data.get('fixed_times', '')
+                sub.interval_hours = sub_data.get('interval_hours', 1)
+                sub.res_filter = sub_data.get('res_filter', ['sd','720p','1080p','4k','8k'])
+            else:
+                session.add(Subscription(**sub_data))
+        
+        # 更新 aggregates
+        for agg_data in config["aggregates"]:
+            agg = session.get(Aggregate, agg_data['id'])
+            if agg:
+                agg.name = agg_data['name']
+                agg.subscription_ids = agg_data.get('subscription_ids', [])
+                agg.strategy = agg_data.get('strategy', 'best_score')
+                agg.enabled = agg_data.get('enabled', True)
+                agg.epg_aggregate_id = agg_data.get('epg_aggregate_id')
+            else:
+                session.add(Aggregate(**agg_data))
+        
+        # 更新 epg_aggregates
+        for epg_data in config["epg_aggregates"]:
+            epg = session.get(EPGAggregate, epg_data['id'])
+            if epg:
+                epg.name = epg_data['name']
+                epg.sources = epg_data.get('sources', [])
+                epg.cache_days = epg_data.get('cache_days', 3)
+                epg.update_interval = epg_data.get('update_interval', 24)
+                epg.enabled = epg_data.get('enabled', True)
+            else:
+                session.add(EPGAggregate(**epg_data))
+        
+        # 更新 settings
+        for key, value in config["settings"].items():
+            setting = session.get(Setting, key)
+            if setting:
+                setting.value = str(value)
+            else:
+                session.add(Setting(key=key, value=str(value)))
+        session.commit()
+    reschedule_all()
+    reschedule_epg_all()
+
 # ---------- CSV 日志记录 ----------
 def write_log_csv(row_dict):
     csv_path = os.path.join(LOG_DIR, f"{get_today()}.csv")
@@ -248,6 +265,14 @@ def write_log_csv(row_dict):
             if not file_exists:
                 writer.writeheader()
             writer.writerow(row_dict)
+
+# ---------- 全局状态 ----------
+subs_status, ip_cache = {}, {}
+aggregates_status = {}
+epg_aggregates_status = {}
+api_lock, log_lock, file_lock = threading.Lock(), threading.Lock(), threading.Lock()
+scheduler = BackgroundScheduler()
+scheduler.start()
 
 # ---------- 地理定位（批量版）----------
 def fetch_ip_locations_sync(sub_id, host_list):
@@ -360,6 +385,33 @@ def probe_stream(url, use_hw):
             print(f"Hardware acceleration failed for {url}, falling back to software")
     return run_f([], "💻", "software")
 
+# ---------- 待处理频道管理 ----------
+def add_pending_channel(raw_name, sub_id):
+    with db_session() as session:
+        pc = session.query(PendingChannel).filter_by(raw_name=raw_name).first()
+        if pc:
+            pc.count += 1
+            if sub_id not in pc.sub_ids:
+                sub_ids = pc.sub_ids or []
+                sub_ids.append(sub_id)
+                pc.sub_ids = sub_ids
+        else:
+            pc = PendingChannel(raw_name=raw_name, count=1, sub_ids=[sub_id])
+            session.add(pc)
+        session.commit()
+
+def append_alias(main_name, aliases):
+    with open(ALIAS_FILE, 'a', encoding='utf-8') as f:
+        line = f"{main_name}," + ",".join(aliases) + "\n"
+        f.write(line)
+    global ALIAS_CACHE, ALIAS_MTIME
+    ALIAS_CACHE = None
+    ALIAS_MTIME = None
+
+def append_to_demo(channel_name, group_name):
+    with open(DEMO_FILE, 'a', encoding='utf-8') as f:
+        f.write(f"{channel_name}\n")
+
 # ---------- 单频道测试 ----------
 def test_single_channel(sub_id, name, url, use_hw):
     status = subs_status[sub_id]
@@ -425,7 +477,6 @@ def test_single_channel(sub_id, name, url, use_hw):
             status["analytics"]["v_codec"][meta['v_codec']] = status["analytics"]["v_codec"].get(meta['v_codec'], 0) + 1
             status["analytics"]["a_codec"][meta['a_codec']] = status["analytics"]["a_codec"].get(meta['a_codec'], 0) + 1
             status["analytics"]["stability"]["success"] += 1
-            # 新增统计
             isp_name = geo.get('isp', '未知')
             status["analytics"]["isp"][isp_name] = status["analytics"]["isp"].get(isp_name, 0) + 1
             protocol = parsed.scheme
@@ -513,7 +564,10 @@ def run_task(sub_id):
         sub_url = sub.url
         threads = sub.threads or 10
         res_filter = sub.res_filter or ["sd", "720p", "1080p", "4k", "8k"]
-        use_hw = load_config()["settings"].get("use_hwaccel", True)  # 从 settings 表获取
+    
+    # 从配置中获取 use_hw（安全方式）
+    config = load_config()
+    use_hw = config.get("settings", {}).get("use_hwaccel", True)
 
     if subs_status.get(sub_id, {}).get("running"):
         return
@@ -542,7 +596,7 @@ def run_task(sub_id):
         }
     }
 
-    # 拉取订阅内容（与之前相同）
+    # 拉取订阅内容
     raw_channels = []
     try:
         r = requests.get(sub_url, timeout=15, verify=False)
@@ -600,7 +654,7 @@ def run_task(sub_id):
     duration = format_duration(time.time() - start_ts)
     update_ts = get_now()
 
-    # 生成报告（与之前相同）
+    # 生成报告
     status["logs"].append(" ")
     status["logs"].append("📜 ==================== 探测结算报告 ====================")
     status["logs"].append(f"⏱️ 任务总耗时: {duration} | 有效源: {len(valid_list)} / 成功探测: {status['success']}")
@@ -620,7 +674,6 @@ def run_task(sub_id):
         status["logs"].append("🚫 --- 已熔断的接口清单 ---")
         for bh in status["blacklisted_hosts"]:
             status["logs"].append(f"❌ {bh} (连续10次失败)")
-    # 新增统计
     status["logs"].append("📊 --- 运营商分布 ---")
     isp_sorted = sorted(status["analytics"]["isp"].items(), key=lambda x: x[1], reverse=True)[:10]
     for isp, count in isp_sorted:
@@ -634,12 +687,12 @@ def run_task(sub_id):
     status["logs"].append("======================================================")
     status["logs"].append(f"🏁 任务完成时间: {get_now()}")
 
-    # 输出 M3U 和 TXT（仍保持文件输出，用于提供下载）
+    # 输出 M3U 和 TXT
     try:
         m3u_p = os.path.join(OUTPUT_DIR, f"{sub_id}.m3u")
         txt_p = os.path.join(OUTPUT_DIR, f"{sub_id}.txt")
-        epg = load_config()["settings"].get("epg_url", "")
-        logo = load_config()["settings"].get("logo_base", "")
+        epg = config.get("settings", {}).get("epg_url", "")
+        logo = config.get("settings", {}).get("logo_base", "")
         with open(m3u_p, 'w', encoding='utf-8') as fm:
             fm.write(f"#EXTM3U x-tvg-url=\"{epg}\"\n# Updated: {update_ts}\n# Duration: {duration}\n")
             for c in valid_list:
@@ -680,12 +733,9 @@ def run_aggregate(agg_id, auto=False):
         log(f"📋 聚合名称: {agg.name}")
         log(f"📦 包含订阅: {', '.join(agg.subscription_ids or [])}")
 
-        # 从 ProbeResult 表中获取最新探测结果（每个订阅、每个频道取最高分）
-        # 这里简化处理：查询所有符合条件的记录，然后在内存中聚合
         results = session.query(ProbeResult).filter(ProbeResult.sub_id.in_(agg.subscription_ids)).all()
         log(f"📊 共从数据库读取 {len(results)} 条原始探测结果")
 
-        # 按标准名聚合，取最高分
         channel_map = {}
         for r in results:
             std_name, matched = match_channel_name(r.channel_name)
@@ -699,7 +749,7 @@ def run_aggregate(agg_id, auto=False):
 
         log(f"📊 聚合后得到 {len(channel_map)} 个标准频道")
 
-    # 读取 demo.txt 获取顺序和分组信息（与之前相同）
+    # 读取 demo.txt 获取顺序和分组信息
     ordered_names = []
     group_map = {}
     if os.path.exists(DEMO_FILE):
@@ -721,7 +771,6 @@ def run_aggregate(agg_id, auto=False):
         ordered_names = sorted(channel_map.keys())
         log(f"📋 未找到 demo.txt，使用字母顺序")
 
-    # 按顺序生成最终列表
     final_list = []
     for name in ordered_names:
         if name in channel_map:
@@ -731,9 +780,8 @@ def run_aggregate(agg_id, auto=False):
 
     log(f"✅ 最终生成 {len(final_list)} 个有效链接")
 
-    # 确定使用的 EPG URL
     config = load_config()
-    epg_url = config["settings"].get("epg_url", "")
+    epg_url = config.get("settings", {}).get("epg_url", "")
     epg_agg_id = agg.epg_aggregate_id
     if epg_agg_id:
         with db_session() as session:
@@ -746,9 +794,8 @@ def run_aggregate(agg_id, auto=False):
     else:
         log(f"📺 使用全局 EPG: {epg_url}")
 
-    # 生成输出文件（与之前相同）
     update_ts = get_now()
-    logo_base = config["settings"].get("logo_base", "")
+    logo_base = config.get("settings", {}).get("logo_base", "")
     m3u_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.m3u")
     txt_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.txt")
     
@@ -768,7 +815,6 @@ def run_aggregate(agg_id, auto=False):
 
     log(f"💾 文件已写入: {m3u_path}, {txt_path}")
 
-    # 更新聚合最后更新时间
     with db_session() as session:
         agg = session.get(Aggregate, agg_id)
         if agg:
@@ -778,126 +824,132 @@ def run_aggregate(agg_id, auto=False):
     log(f"🏁 聚合任务完成")
     aggregates_status[agg_id]["running"] = False
 
-# ---------- EPG 聚合（保持不变，因为不涉及数据库）----------
+# ---------- EPG 聚合（增强版）----------
 def run_epg_aggregate(epg_agg_id, auto=False):
-    if epg_aggregates_status.get(epg_agg_id, {}).get("running"):
-        return
-    epg_aggregates_status[epg_agg_id] = {"running": True, "logs": []}
-    
-    def log(msg):
-        ts = get_now()
-        epg_aggregates_status[epg_agg_id]["logs"].append(f"{ts} - {msg}")
-    
-    log(f"📺 EPG 聚合任务开始 (自动: {auto})")
-    config = load_config()
-    epg_agg = next((e for e in config.get("epg_aggregates", []) if e["id"] == epg_agg_id), None)
-    if not epg_agg:
-        log("❌ EPG 聚合配置不存在")
-        epg_aggregates_status[epg_agg_id]["running"] = False
-        return
+    try:
+        if epg_aggregates_status.get(epg_agg_id, {}).get("running"):
+            return
+        epg_aggregates_status[epg_agg_id] = {"running": True, "logs": []}
+        
+        def log(msg):
+            ts = get_now()
+            epg_aggregates_status[epg_agg_id]["logs"].append(f"{ts} - {msg}")
+        
+        log(f"📺 EPG 聚合任务开始 (自动: {auto})")
+        
+        # 从数据库获取 EPG 聚合配置
+        with db_session() as session:
+            epg_agg = session.get(EPGAggregate, epg_agg_id)
+            if not epg_agg or not epg_agg.enabled:
+                log("❌ EPG 聚合配置不存在或未启用")
+                epg_aggregates_status[epg_agg_id]["running"] = False
+                return
 
-    log(f"📋 EPG 聚合名称: {epg_agg['name']}")
-    log(f"🔗 源列表: {', '.join(epg_agg['sources'])}")
-    cache_days = epg_agg.get("cache_days", 3)
-    log(f"📅 缓存天数: {cache_days}")
+            log(f"📋 EPG 聚合名称: {epg_agg.name}")
+            log(f"🔗 源列表: {', '.join(epg_agg.sources)}")
+            cache_days = epg_agg.cache_days or 3
+            log(f"📅 缓存天数: {cache_days}")
 
-    today = datetime.date.today()
-    date_list = [today + datetime.timedelta(days=i) for i in range(-1, cache_days)]
-    date_strs = [d.strftime('%Y%m%d') for d in date_list]
-    log(f"📅 需要包含的日期: {', '.join(date_strs)}")
+        today = datetime.date.today()
+        date_list = [today + datetime.timedelta(days=i) for i in range(-1, cache_days)]
+        date_strs = [d.strftime('%Y%m%d') for d in date_list]
+        log(f"📅 需要包含的日期: {', '.join(date_strs)}")
 
-    programmes = {}
-    channels_dict = {}
+        programmes = {}
+        channels_dict = {}
 
-    for idx, source_url in enumerate(epg_agg['sources']):
-        log(f"⬇️ 正在下载源 {idx+1}: {source_url}")
-        try:
-            resp = requests.get(source_url, timeout=30)
-            if resp.status_code != 200:
-                log(f"⚠️ 源 {source_url} 返回状态码 {resp.status_code}，跳过")
-                continue
-            content = resp.content
-            is_gz = source_url.endswith('.gz') or resp.headers.get('Content-Encoding') == 'gzip'
-            if is_gz:
-                try:
-                    buf = BytesIO(content)
-                    with gzip.GzipFile(fileobj=buf) as gz_file:
-                        content = gz_file.read()
-                    log(f"📦 检测到 gzip 压缩，已解压")
-                except Exception as e:
-                    log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
+        for idx, source_url in enumerate(epg_agg.sources):
+            log(f"⬇️ 正在下载源 {idx+1}: {source_url}")
             try:
-                tree = ET.parse(BytesIO(content))
-                root = tree.getroot()
+                resp = requests.get(source_url, timeout=30)
+                if resp.status_code != 200:
+                    log(f"⚠️ 源 {source_url} 返回状态码 {resp.status_code}，跳过")
+                    continue
+                content = resp.content
+                is_gz = source_url.endswith('.gz') or resp.headers.get('Content-Encoding') == 'gzip'
+                if is_gz:
+                    try:
+                        buf = BytesIO(content)
+                        with gzip.GzipFile(fileobj=buf) as gz_file:
+                            content = gz_file.read()
+                        log(f"📦 检测到 gzip 压缩，已解压")
+                    except Exception as e:
+                        log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
+                try:
+                    tree = ET.parse(BytesIO(content))
+                    root = tree.getroot()
+                except Exception as e:
+                    log(f"❌ 解析 XML 失败: {str(e)}")
+                    continue
+
+                channels_added = 0
+                for channel in root.findall('channel'):
+                    ch_id = channel.get('id')
+                    if ch_id:
+                        std_name, matched = match_channel_name(ch_id)
+                        if ch_id not in channels_dict:
+                            channels_dict[ch_id] = (channel, std_name if matched else None)
+                            channels_added += 1
+                if channels_added > 0:
+                    log(f"📺 源 {idx+1} 添加了 {channels_added} 个频道")
+
+                count = 0
+                for prog in root.findall('programme'):
+                    start = prog.get('start')
+                    channel = prog.get('channel')
+                    title_elem = prog.find('title')
+                    title = title_elem.text if title_elem is not None else ''
+                    if start and len(start) >= 8:
+                        prog_date = start[:8]
+                        if prog_date in date_strs:
+                            key = (channel, start, title)
+                            if key not in programmes:
+                                programmes[key] = prog
+                                count += 1
+                log(f"➕ 源 {idx+1} 添加了 {count} 个节目")
             except Exception as e:
-                log(f"❌ 解析 XML 失败: {str(e)}")
-                continue
+                log(f"❌ 下载源 {source_url} 失败: {str(e)}")
 
-            channels_added = 0
-            for channel in root.findall('channel'):
-                ch_id = channel.get('id')
-                if ch_id:
-                    std_name, matched = match_channel_name(ch_id)
-                    if ch_id not in channels_dict:
-                        channels_dict[ch_id] = (channel, std_name if matched else None)
-                        channels_added += 1
-            if channels_added > 0:
-                log(f"📺 源 {idx+1} 添加了 {channels_added} 个频道")
+        log(f"📊 共收集到 {len(channels_dict)} 个频道，{len(programmes)} 个节目")
 
-            count = 0
-            for prog in root.findall('programme'):
-                start = prog.get('start')
-                channel = prog.get('channel')
-                title_elem = prog.find('title')
-                title = title_elem.text if title_elem is not None else ''
-                if start and len(start) >= 8:
-                    prog_date = start[:8]
-                    if prog_date in date_strs:
-                        key = (channel, start, title)
-                        if key not in programmes:
-                            programmes[key] = prog
-                            count += 1
-            log(f"➕ 源 {idx+1} 添加了 {count} 个节目")
-        except Exception as e:
-            log(f"❌ 下载源 {source_url} 失败: {str(e)}")
+        new_root = ET.Element('tv')
+        for ch_id, (ch_elem, std_name) in channels_dict.items():
+            new_ch = copy.deepcopy(ch_elem)
+            if std_name:
+                dn = ET.SubElement(new_ch, 'display-name')
+                dn.text = std_name
+            new_root.append(new_ch)
+        for prog in programmes.values():
+            new_root.append(prog)
 
-    log(f"📊 共收集到 {len(channels_dict)} 个频道，{len(programmes)} 个节目")
+        update_ts = get_now()
+        xml_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}.xml")
+        tree = ET.ElementTree(new_root)
+        tree.write(xml_path, encoding='utf-8', xml_declaration=True)
+        log(f"💾 XML 已保存: {xml_path}")
 
-    new_root = ET.Element('tv')
-    for ch_id, (ch_elem, std_name) in channels_dict.items():
-        new_ch = copy.deepcopy(ch_elem)
-        if std_name:
-            dn = ET.SubElement(new_ch, 'display-name')
-            dn.text = std_name
-        new_root.append(new_ch)
-    for prog in programmes.values():
-        new_root.append(prog)
+        with db_session() as session:
+            epg = session.get(EPGAggregate, epg_agg_id)
+            if epg:
+                epg.last_update = datetime.datetime.now()
+                session.commit()
 
-    update_ts = get_now()
-    xml_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}.xml")
-    tree = ET.ElementTree(new_root)
-    tree.write(xml_path, encoding='utf-8', xml_declaration=True)
-    log(f"💾 XML 已保存: {xml_path}")
+        epg_status = {
+            "update_time": update_ts,
+            "total": len(programmes),
+            "channels": len(channels_dict),
+            "sources": epg_agg.sources,
+            "files": {"xml": f"/epg/{epg_agg_id}.xml"}
+        }
+        status_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}_status.json")
+        with open(status_path, 'w', encoding='utf-8') as f:
+            json.dump(epg_status, f, ensure_ascii=False)
 
-    with db_session() as session:
-        epg = session.get(EPGAggregate, epg_agg_id)
-        if epg:
-            epg.last_update = datetime.datetime.now()
-            session.commit()
-
-    epg_status = {
-        "update_time": update_ts,
-        "total": len(programmes),
-        "channels": len(channels_dict),
-        "sources": epg_agg['sources'],
-        "files": {"xml": f"/epg/{epg_agg_id}.xml"}
-    }
-    status_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}_status.json")
-    with open(status_path, 'w', encoding='utf-8') as f:
-        json.dump(epg_status, f, ensure_ascii=False)
-
-    log(f"🏁 EPG 聚合任务完成")
-    epg_aggregates_status[epg_agg_id]["running"] = False
+        log(f"🏁 EPG 聚合任务完成")
+        epg_aggregates_status[epg_agg_id]["running"] = False
+    except Exception as e:
+        epg_aggregates_status[epg_agg_id]["running"] = False
+        log(f"❌ 聚合任务异常: {str(e)}")
 
 # ---------- 计划任务调度 ----------
 def clear_sub_jobs(sub_id):
@@ -1085,7 +1137,6 @@ def get_status(sub_id):
             "banned_count": len(s.get("blacklisted_hosts", [])),
             "analytics": s["analytics"]
         })
-    # 尝试从存档文件中读取（兼容旧方式）
     archive_path = os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json")
     if os.path.exists(archive_path):
         with open(archive_path, 'r', encoding='utf-8') as f:
@@ -1368,9 +1419,6 @@ def set_group():
     return jsonify({"status": "ok"})
 
 # ---------- 启动时初始化调度 ----------
-scheduler = BackgroundScheduler()
-scheduler.start()
-
 with app.app_context():
     reschedule_all()
     reschedule_epg_all()
