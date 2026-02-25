@@ -1404,7 +1404,6 @@ def get_groups():
                     groups.append(group_name)
     return jsonify(groups)
 
-# ---------- 待处理频道 API ----------
 @app.route('/api/pending', methods=['GET'])
 def get_pending():
     with db_session() as session:
@@ -1415,6 +1414,31 @@ def get_pending():
             "first_seen": p.first_seen.strftime('%Y-%m-%d %H:%M:%S'),
             "sub_ids": p.sub_ids
         } for p in pendings])
+
+@app.route('/api/channel_names')
+def get_channel_names():
+    """返回所有已知的标准名（用于别名输入建议）"""
+    names = set()
+    # 从 alias.txt 获取主名
+    if os.path.exists(ALIAS_FILE):
+        with open(ALIAS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(',')
+                if parts:
+                    names.add(parts[0].strip())
+    # 从 demo.txt 获取频道名（非分组行）
+    if os.path.exists(DEMO_FILE):
+        with open(DEMO_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if ',#genre#' not in line:
+                    names.add(line)
+    return jsonify(sorted(names))
 
 @app.route('/api/pending/ignore', methods=['POST'])
 def ignore_pending():
