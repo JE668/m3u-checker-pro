@@ -108,7 +108,8 @@
                 </div>
                 <div class="mb-3">
                     <label class="fw-bold small text-muted">标准名</label>
-                    <input type="text" id="aliasMainName" class="form-control bg-light border-0 rounded-3" placeholder="例如: CCTV-1">
+                    <input type="text" id="aliasMainName" class="form-control bg-light border-0 rounded-3" placeholder="例如: CCTV-1" list="channelNamesList">
+                    <datalist id="channelNamesList"></datalist>
                 </div>
                 <div class="mb-3">
                     <label class="fw-bold small text-muted">额外别名（逗号分隔）</label>
@@ -176,6 +177,19 @@
             const res = await fetch('/api/subs');
             const data = await res.json();
             subs = data.subs;
+        }
+
+        // 加载频道名列表（用于别名输入建议）
+        async function loadChannelNames() {
+            const res = await fetch('/api/channel_names');
+            const names = await res.json();
+            const datalist = document.getElementById('channelNamesList');
+            datalist.innerHTML = '';
+            names.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                datalist.appendChild(option);
+            });
         }
 
         // 获取订阅名称
@@ -260,6 +274,7 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({channel_name: channelName, group_name: groupName})
             });
+            await loadGroups();  // 刷新分组列表，使新分组立即可见
             groupModal.hide();
             loadPending();
         };
@@ -274,10 +289,11 @@
             loadPending();
         }
 
-        // 初始化：先加载分组和订阅，再加载待处理列表
+        // 初始化：先加载分组、订阅、频道名列表，再加载待处理列表
         window.onload = async () => {
             await loadGroups();
             await loadSubs();
+            await loadChannelNames();  // 新增：加载频道名列表供输入建议
             await loadPending();
         };
     </script>
