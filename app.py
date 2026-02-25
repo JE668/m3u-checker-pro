@@ -409,8 +409,33 @@ def append_alias(main_name, aliases):
     ALIAS_MTIME = None
 
 def append_to_demo(channel_name, group_name):
-    with open(DEMO_FILE, 'a', encoding='utf-8') as f:
-        f.write(f"{channel_name}\n")
+    """向 demo.txt 追加频道到指定分组（如果分组不存在则创建）"""
+    with file_lock:
+        # 读取现有内容
+        if os.path.exists(DEMO_FILE):
+            with open(DEMO_FILE, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        else:
+            lines = []
+        # 查找分组位置
+        group_line = f"{group_name},#genre#\n"
+        group_index = -1
+        for i, line in enumerate(lines):
+            if line.strip() == group_line.strip():
+                group_index = i
+                break
+        if group_index == -1:
+            # 分组不存在，在末尾添加
+            lines.append(group_line)
+            lines.append(channel_name + "\n")
+        else:
+            # 分组存在，在分组下一行插入（如果已有频道，则插入到该分组最后一个频道之后）
+            insert_pos = group_index + 1
+            while insert_pos < len(lines) and not lines[insert_pos].startswith('#') and ',' not in lines[insert_pos]:
+                insert_pos += 1
+            lines.insert(insert_pos, channel_name + "\n")
+        with open(DEMO_FILE, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
 
 # ---------- 单频道测试 ----------
 def test_single_channel(sub_id, name, url, use_hw):
