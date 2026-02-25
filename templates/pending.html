@@ -96,7 +96,7 @@
         </div>
     </div>
 
-    <!-- 设置别名模态框 -->
+    <!-- 设置别名模态框（增强版：自动加载别名） -->
     <div class="modal fade" id="aliasModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4" style="border-radius: 35px;">
@@ -108,7 +108,7 @@
                 </div>
                 <div class="mb-3">
                     <label class="fw-bold small text-muted">标准名</label>
-                    <input type="text" id="aliasMainName" class="form-control bg-light border-0 rounded-3" placeholder="例如: CCTV-1" list="channelNamesList">
+                    <input type="text" id="aliasMainName" class="form-control bg-light border-0 rounded-3" placeholder="例如: CCTV-1" list="channelNamesList" autocomplete="off">
                     <datalist id="channelNamesList"></datalist>
                 </div>
                 <div class="mb-3">
@@ -123,7 +123,7 @@
         </div>
     </div>
 
-    <!-- 设置分组模态框（增强版） -->
+    <!-- 设置分组模态框（保持不变） -->
     <div class="modal fade" id="groupModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4" style="border-radius: 35px;">
@@ -157,6 +157,16 @@
         const groupModal = new bootstrap.Modal(document.getElementById('groupModal'));
         let groups = [];
         let subs = [];
+
+        // 防抖函数
+        function debounce(func, wait) {
+            let timeout;
+            return function(...args) {
+                const context = this;
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(context, args), wait);
+            };
+        }
 
         // 加载分组列表
         async function loadGroups() {
@@ -201,7 +211,6 @@
         async function loadPending() {
             const res = await fetch('/api/pending');
             let data = await res.json();
-            // 按频道名称排序（忽略大小写）
             data.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { sensitivity: 'base' }));
             const tbody = document.getElementById('pendingList');
             tbody.innerHTML = '';
@@ -223,14 +232,39 @@
             });
         }
 
+        // 打开别名模态框
         function openAlias(name) {
             document.getElementById('aliasRawName').value = name;
             document.getElementById('aliasRawNameDisplay').value = name;
             document.getElementById('aliasMainName').value = '';
             document.getElementById('aliasExtra').value = '';
+            
+            // 移除之前可能绑定的事件，避免多个监听器
+            const mainNameInput = document.getElementById('aliasMainName');
+            mainNameInput.removeEventListener('input', aliasInputHandler);
+            // 添加新的事件
+            mainNameInput.addEventListener('input', aliasInputHandler);
+            
             aliasModal.show();
         }
 
+        // 别名输入事件处理器（防抖）
+        const aliasInputHandler = debounce(async function(e) {
+            const mainName = e.target.value.trim();
+            if (!mainName) return;
+            try {
+                const res = await fetch(`/api/alias/${encodeURIComponent(mainName)}`);
+                if (!res.ok) return;
+                const aliases = await res.json();
+                // 将别名数组用逗号连接，填充到额外别名输入框
+                const extraInput = document.getElementById('aliasExtra');
+                extraInput.value = aliases.join(', ');
+            } catch (err) {
+                console.error('加载别名失败', err);
+            }
+        }, 500); // 500ms 防抖
+
+        // 保存别名
         document.getElementById('saveAliasBtn').onclick = async () => {
             const rawName = document.getElementById('aliasRawName').value;
             const mainName = document.getElementById('aliasMainName').value.trim();
@@ -239,7 +273,7 @@
                 alert('请输入标准名');
                 return;
             }
-            const aliases = extra ? extra.split(',').map(s => s.trim()) : [];
+            const aliases = extra ? extra.split(',').map(s => s.trim()).filter(s => s) : [];
             await fetch('/api/pending/set_alias', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -249,6 +283,7 @@
             loadPending();
         };
 
+        // 打开分组模态框
         function openGroup(name) {
             document.getElementById('groupChannelName').value = name;
             document.getElementById('groupChannelDisplay').value = name;
@@ -256,6 +291,7 @@
             groupModal.show();
         }
 
+        // 保存分组
         document.getElementById('saveGroupBtn').onclick = async () => {
             const channelName = document.getElementById('groupChannelName').value;
             const select = document.getElementById('groupSelect');
@@ -274,11 +310,12 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({channel_name: channelName, group_name: groupName})
             });
-            await loadGroups();  // 刷新分组列表，使新分组立即可见
+            await loadGroups();  // 刷新分组列表
             groupModal.hide();
             loadPending();
         };
 
+        // 忽略
         async function ignore(name) {
             if (!confirm(`确定忽略 "${name}" ？`)) return;
             await fetch('/api/pending/ignore', {
@@ -289,11 +326,11 @@
             loadPending();
         }
 
-        // 初始化：先加载分组、订阅、频道名列表，再加载待处理列表
+        // 初始化
         window.onload = async () => {
             await loadGroups();
             await loadSubs();
-            await loadChannelNames();  // 新增：加载频道名列表供输入建议
+            await loadChannelNames();
             await loadPending();
         };
     </script>
