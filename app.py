@@ -883,6 +883,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
         programmes = {}
         channels_dict = {}
 
+        # 下载并解析每个源
         for idx, source_url in enumerate(epg_agg.sources):
             log(f"⬇️ 正在下载源 {idx+1}: {source_url}")
             try:
@@ -891,7 +892,9 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                     log(f"⚠️ 源 {source_url} 返回状态码 {resp.status_code}，跳过")
                     continue
                 content = resp.content
-                is_gz = source_url.endswith('.gz') or resp.headers.get('Content-Encoding') == 'gzip'
+
+                # 处理可能为 gzip 压缩的内容
+                is_gz = source_url.endswith('.gz')
                 if is_gz:
                     try:
                         buf = BytesIO(content)
@@ -899,7 +902,9 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                             content = gz_file.read()
                         log(f"📦 检测到 gzip 压缩，已解压")
                     except Exception as e:
-                        log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
+                        log(f"⚠️ 解压失败: {str(e)}，将作为普通 XML 尝试解析")
+                        content = resp.content  # 恢复原始内容
+
                 try:
                     tree = ET.parse(BytesIO(content))
                     root = tree.getroot()
