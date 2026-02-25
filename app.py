@@ -674,7 +674,7 @@ def run_aggregate(agg_id, auto=False):
     log(f"🏁 聚合任务完成，耗时 {format_duration(time.time() - start_time)}")
     aggregates_status[agg_id]["running"] = False
 
-# ---------- EPG 聚合（增强版：自动解压 gzip、错误恢复）----------
+# ---------- EPG 聚合（增强版：自动解压 gzip、收集频道）----------
 def run_epg_aggregate(epg_agg_id, auto=False):
     if epg_aggregates_status.get(epg_agg_id, {}).get("running"):
         return
@@ -705,6 +705,8 @@ def run_epg_aggregate(epg_agg_id, auto=False):
 
     # 存储所有节目的字典，键为 (channel, start, title) 用于去重
     programmes = {}
+    # 存储所有频道的字典，键为频道ID，值为channel元素
+    channels_dict = {}
 
     # 下载并解析每个源
     for idx, source_url in enumerate(epg_agg['sources']):
@@ -728,13 +730,23 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 except Exception as e:
                     log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
 
-            # 尝试解析 XML（标准库，不支持 recover 参数，直接解析）
+            # 尝试解析 XML
             try:
                 tree = ET.parse(BytesIO(content))
                 root = tree.getroot()
             except Exception as e:
                 log(f"❌ 解析 XML 失败: {str(e)}")
                 continue
+
+            # 收集频道元素
+            channels_added = 0
+            for channel in root.findall('channel'):
+                ch_id = channel.get('id')
+                if ch_id and ch_id not in channels_dict:
+                    channels_dict[ch_id] = channel
+                    channels_added += 1
+            if channels_added > 0:
+                log(f"📺 源 {idx+1} 添加了 {channels_added} 个频道")
 
             # 遍历所有 programme
             count = 0
@@ -755,11 +767,14 @@ def run_epg_aggregate(epg_agg_id, auto=False):
         except Exception as e:
             log(f"❌ 下载源 {source_url} 失败: {str(e)}")
 
-    log(f"📊 共收集到 {len(programmes)} 个节目")
+    log(f"📊 共收集到 {len(channels_dict)} 个频道，{len(programmes)} 个节目")
 
     # 构建新的 XML
     new_root = ET.Element('tv')
-    # 将所有节目添加到新树
+    # 先添加所有频道
+    for ch in channels_dict.values():
+        new_root.append(ch)
+    # 再添加所有节目
     for prog in programmes.values():
         new_root.append(prog)
 
@@ -784,6 +799,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
     epg_status = {
         "update_time": update_ts,
         "total": len(programmes),
+        "channels": len(channels_dict),
         "sources": epg_agg['sources'],
         "files": {
             "xml": f"/epg/{epg_agg_id}.xml",
