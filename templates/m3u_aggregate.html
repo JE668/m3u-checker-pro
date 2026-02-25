@@ -57,7 +57,15 @@
         .btn-primary-grad { background: var(--primary-grad); }
         .btn-success-grad { background: var(--success-grad); }
         .btn-danger-grad { background: var(--danger-grad); }
-        .btn-secondary-custom { background: #64748b; color: white; }
+        .btn-secondary-custom {
+            background: #64748b;
+            color: white;
+        }
+        .btn-secondary-custom:hover {
+            background: #475569;
+            color: #ffffff;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+        }
         .link-item {
             display: flex;
             align-items: center;
@@ -207,23 +215,19 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let subs = [], aggregates = [], epgAggregates = [];
-        let logRefreshTimer = null;  // 日志刷新定时器
+        let logRefreshTimer = null;
 
-        // 实例化模态框
         const editModal = new bootstrap.Modal(document.getElementById('editModal'));
         const logModal = new bootstrap.Modal(document.getElementById('logModal'));
 
         async function loadData() {
-            // 加载订阅列表
             const subRes = await fetch('/api/subs');
             const subData = await subRes.json();
             subs = subData.subs;
 
-            // 加载 EPG 聚合列表
             const epgRes = await fetch('/api/epg_aggregates');
             epgAggregates = await epgRes.json();
 
-            // 加载聚合列表
             const aggRes = await fetch('/api/aggregates');
             aggregates = await aggRes.json();
             renderAggregates();
@@ -273,7 +277,6 @@
                 const logs = data.logs || [];
                 const logContent = document.getElementById('logContent');
                 logContent.innerHTML = logs.length ? logs.join('\n') : '暂无日志';
-                // 自动滚动到底部
                 logContent.scrollTop = logContent.scrollHeight;
             } catch (e) {
                 console.error('刷新日志失败', e);
@@ -281,16 +284,12 @@
         }
 
         function showLog(aggId) {
-            // 清除之前的定时器
             if (logRefreshTimer) {
                 clearInterval(logRefreshTimer);
                 logRefreshTimer = null;
             }
-            // 先加载一次
             refreshLog(aggId);
-            // 启动定时器每3秒刷新一次
             logRefreshTimer = setInterval(() => refreshLog(aggId), 3000);
-            // 监听模态框隐藏事件，清除定时器
             const modalEl = document.getElementById('logModal');
             modalEl.addEventListener('hidden.bs.modal', function () {
                 if (logRefreshTimer) {
@@ -315,7 +314,6 @@
             document.getElementById('editStrategy').value = agg.strategy || 'best_score';
             document.getElementById('editEnabled').checked = agg.enabled !== false;
 
-            // 生成订阅复选框
             const container = document.getElementById('subCheckboxes');
             container.innerHTML = '';
             subs.forEach(sub => {
@@ -329,7 +327,6 @@
                 container.appendChild(div);
             });
 
-            // 填充 EPG 聚合下拉框
             const epgSelect = document.getElementById('editEpgAggregate');
             epgSelect.innerHTML = '<option value="">不使用（使用全局EPG）</option>';
             epgAggregates.forEach(epg => {
@@ -382,7 +379,6 @@
         async function runAggregate(id) {
             await fetch('/api/aggregate/run/' + id);
             alert('聚合任务已启动');
-            // 延迟2秒后刷新列表，确保状态文件已生成
             setTimeout(() => loadData(), 2000);
         }
 
