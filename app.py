@@ -6,31 +6,180 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from concurrent.futures import ThreadPoolExecutor
 import xml.etree.ElementTree as ET
 from io import BytesIO
+from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, Text, Boolean, JSON, and_
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.pool import StaticPool
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
 
-# --- 路径配置 ---
+# --- 数据库配置 ---
 DATA_DIR = "/app/data"
 LOG_DIR = os.path.join(DATA_DIR, "log")
 OUTPUT_DIR = os.path.join(DATA_DIR, "output")
-CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")  # 旧文件，仅迁移使用
 ALIAS_FILE = os.path.join(DATA_DIR, "alias.txt")
 DEMO_FILE = os.path.join(DATA_DIR, "demo.txt")
-PENDING_FILE = os.path.join(DATA_DIR, "pending.json")
+PENDING_FILE = os.path.join(DATA_DIR, "pending.json")  # 旧文件，仅迁移使用
 EPG_CACHE_DIR = os.path.join(DATA_DIR, "epg_cache")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(EPG_CACHE_DIR, exist_ok=True)
 
-subs_status, ip_cache = {}, {}
-aggregates_status = {}      # 聚合任务运行状态
-epg_aggregates_status = {}  # EPG聚合任务运行状态
-api_lock, log_lock, file_lock = threading.Lock(), threading.Lock(), threading.Lock()
-scheduler = BackgroundScheduler()
-scheduler.start()
+DB_PATH = os.path.join(DATA_DIR, "m3u_checker.db")
+engine = create_engine(f'sqlite:///{DB_PATH}?check_same_thread=False', poolclass=StaticPool)
+db_session = scoped_session(sessionmaker(bind=engine))
+Base = declarative_base()
 
-# ---------- 别名加载与匹配（增强版，支持正则）----------
+# --- 定义模型 ---
+class Subscription(Base):
+    __tablename__ = 'subscriptions'
+    id = Column(String(50), primary_key=True)
+    name = Column(String(200), nullable=False)
+    url = Column(Text, nullable=False)
+    threads = Column(Integer, default=10)
+    enabled = Column(Boolean, default=True)
+    schedule_mode = Column(String(20), default='none')
+    fixed_times = Column(String(500), default='')
+    interval_hours = Column(Integer, default=1)
+    res_filter = Column(JSON, default=['sd','720p','1080p','4k','8k'])  # 存储为JSON数组
+    created_at = Column(DateTime, default=datetime.datetime.now)
+
+class Aggregate(Base):
+    __tablename__ = 'aggregates'
+    id = Column(String(50), primary_key=True)
+    name = Column(String(200), nullable=False)
+    subscription_ids = Column(JSON)  # 存储订阅ID列表
+    strategy = Column(String(20), default='best_score')
+    enabled = Column(Boolean, default=True)
+    epg_aggregate_id = Column(String(50), nullable=True)
+    last_update = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now)
+
+class EPGAggregate(Base):
+    __tablename__ = 'epg_aggregates'
+    id = Column(String(50), primary_key=True)
+    name = Column(String(200), nullable=False)
+    sources = Column(JSON)  # EPG源URL列表
+    cache_days = Column(Integer, default=3)
+    update_interval = Column(Integer, default=24)
+    enabled = Column(Boolean, default=True)
+    last_update = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now)
+
+class Setting(Base):
+    __tablename__ = 'settings'
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)
+
+class ProbeResult(Base):
+    __tablename__ = 'probe_results'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sub_id = Column(String(50), nullable=False, index=True)
+    channel_name = Column(String(500), nullable=False)
+    url = Column(Text, nullable=False)
+    score = Column(Float, default=0)
+    res_tag = Column(String(20))  # sd, 720p, 1080p, 4k, 8k
+    probe_time = Column(DateTime, default=datetime.datetime.now, index=True)
+    # 可扩展字段：延迟、速度等
+
+class PendingChannel(Base):
+    __tablename__ = 'pending_channels'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    raw_name = Column(String(500), unique=True, nullable=False)
+    count = Column(Integer, default=1)
+    first_seen = Column(DateTime, default=datetime.datetime.now)
+    sub_ids = Column(JSON)  # 记录出现过的订阅ID列表
+
+# 创建表
+Base.metadata.create_all(bind=engine)
+
+# ---------- 旧数据迁移辅助函数 ----------
+def migrate_from_json():
+    """检测旧JSON文件，导入到数据库，然后备份原文件"""
+    config_file = os.path.join(DATA_DIR, "config.json")
+    pending_file = os.path.join(DATA_DIR, "pending.json")
+    
+    # 迁移 config.json
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                old_config = json.load(f)
+            # 导入 subscriptions
+            for sub in old_config.get('subscriptions', []):
+                if not db_session.get(Subscription, sub['id']):
+                    db_session.add(Subscription(
+                        id=sub['id'],
+                        name=sub['name'],
+                        url=sub['url'],
+                        threads=sub.get('threads', 10),
+                        enabled=sub.get('enabled', True),
+                        schedule_mode=sub.get('schedule_mode', 'none'),
+                        fixed_times=sub.get('fixed_times', ''),
+                        interval_hours=sub.get('interval_hours', 1),
+                        res_filter=sub.get('res_filter', ['sd','720p','1080p','4k','8k'])
+                    ))
+            # 导入 aggregates
+            for agg in old_config.get('aggregates', []):
+                if not db_session.get(Aggregate, agg['id']):
+                    db_session.add(Aggregate(
+                        id=agg['id'],
+                        name=agg['name'],
+                        subscription_ids=agg.get('subscription_ids', []),
+                        strategy=agg.get('strategy', 'best_score'),
+                        enabled=agg.get('enabled', True),
+                        epg_aggregate_id=agg.get('epg_aggregate_id'),
+                        last_update=None
+                    ))
+            # 导入 epg_aggregates
+            for epg in old_config.get('epg_aggregates', []):
+                if not db_session.get(EPGAggregate, epg['id']):
+                    db_session.add(EPGAggregate(
+                        id=epg['id'],
+                        name=epg['name'],
+                        sources=epg.get('sources', []),
+                        cache_days=epg.get('cache_days', 3),
+                        update_interval=epg.get('update_interval', 24),
+                        enabled=epg.get('enabled', True),
+                        last_update=None
+                    ))
+            # 导入 settings
+            settings = old_config.get('settings', {})
+            for key, value in settings.items():
+                if not db_session.get(Setting, key):
+                    db_session.add(Setting(key=key, value=str(value)))
+            db_session.commit()
+            # 重命名旧配置文件，防止重复导入
+            os.rename(config_file, config_file + '.bak')
+            print("配置数据迁移完成")
+        except Exception as e:
+            print(f"迁移 config.json 失败: {e}")
+
+    # 迁移 pending.json
+    if os.path.exists(pending_file):
+        try:
+            with open(pending_file, 'r', encoding='utf-8') as f:
+                old_pending = json.load(f)
+            for raw_name, info in old_pending.items():
+                if not db_session.query(PendingChannel).filter_by(raw_name=raw_name).first():
+                    db_session.add(PendingChannel(
+                        raw_name=raw_name,
+                        count=info.get('count', 1),
+                        first_seen=datetime.datetime.strptime(info['first_seen'], '%Y-%m-%d %H:%M:%S') if 'first_seen' in info else datetime.datetime.now(),
+                        sub_ids=info.get('sub_ids', [])
+                    ))
+            db_session.commit()
+            os.rename(pending_file, pending_file + '.bak')
+            print("待处理频道数据迁移完成")
+        except Exception as e:
+            print(f"迁移 pending.json 失败: {e}")
+
+# 首次启动时执行迁移
+if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
+    migrate_from_json()
+
+# ---------- 别名加载与匹配 ----------
 ALIAS_CACHE = None
 ALIAS_MTIME = None
 
@@ -79,76 +228,6 @@ def match_channel_name(raw_name):
                     return main_name, True
     return raw_name, False
 
-# ---------- 待处理频道管理 ----------
-pending_lock = threading.Lock()
-
-def load_pending():
-    if os.path.exists(PENDING_FILE):
-        with open(PENDING_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-def save_pending(pending):
-    with open(PENDING_FILE, 'w', encoding='utf-8') as f:
-        json.dump(pending, f, indent=2, ensure_ascii=False)
-
-def add_pending_channel(raw_name, sub_id):
-    with pending_lock:
-        pending = load_pending()
-        key = raw_name.strip()
-        if key not in pending:
-            pending[key] = {
-                "count": 1,
-                "first_seen": get_now(),
-                "sub_ids": [sub_id]
-            }
-        else:
-            pending[key]["count"] += 1
-            if sub_id not in pending[key]["sub_ids"]:
-                pending[key]["sub_ids"].append(sub_id)
-        save_pending(pending)
-
-# ---------- 别名和 demo 文件更新 ----------
-def append_alias(main_name, aliases):
-    """向 alias.txt 追加新别名规则"""
-    with file_lock:
-        with open(ALIAS_FILE, 'a', encoding='utf-8') as f:
-            line = f"{main_name}," + ",".join(aliases) + "\n"
-            f.write(line)
-    # 强制重新加载别名
-    global ALIAS_CACHE, ALIAS_MTIME
-    ALIAS_CACHE = None
-    ALIAS_MTIME = None
-
-def append_to_demo(channel_name, group_name):
-    """向 demo.txt 追加频道到指定分组（如果分组不存在则创建）"""
-    with file_lock:
-        # 读取现有内容
-        if os.path.exists(DEMO_FILE):
-            with open(DEMO_FILE, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-        else:
-            lines = []
-        # 查找分组位置
-        group_line = f"{group_name},#genre#\n"
-        group_index = -1
-        for i, line in enumerate(lines):
-            if line.strip() == group_line.strip():
-                group_index = i
-                break
-        if group_index == -1:
-            # 分组不存在，在末尾添加
-            lines.append(group_line)
-            lines.append(channel_name + "\n")
-        else:
-            # 分组存在，在分组下一行插入（如果已有频道，则插入到该分组最后一个频道之后）
-            insert_pos = group_index + 1
-            while insert_pos < len(lines) and not lines[insert_pos].startswith('#') and ',' not in lines[insert_pos]:
-                insert_pos += 1
-            lines.insert(insert_pos, channel_name + "\n")
-        with open(DEMO_FILE, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
-
 # ---------- 工具函数 ----------
 def get_now():
     return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -158,38 +237,6 @@ def get_today():
 
 def format_duration(seconds):
     return str(datetime.timedelta(seconds=int(seconds)))
-
-def load_config():
-    default = {
-        "subscriptions": [],
-        "aggregates": [],
-        "epg_aggregates": [],
-        "settings": {
-            "use_hwaccel": True,
-            "epg_url": "http://epg.51zmt.top:12489/e.xml",
-            "logo_base": "https://live.fanmingming.com/tv/"
-        }
-    }
-    if not os.path.exists(CONFIG_FILE):
-        return default
-    try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            d = json.load(f)
-            if "settings" not in d:
-                d["settings"] = default["settings"]
-            if "aggregates" not in d:
-                d["aggregates"] = []
-            if "epg_aggregates" not in d:
-                d["epg_aggregates"] = []
-            return d
-    except:
-        return default
-
-def save_config(config):
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
-    reschedule_all()
-    reschedule_epg_all()
 
 # ---------- CSV 日志记录 ----------
 def write_log_csv(row_dict):
@@ -415,6 +462,24 @@ def test_single_channel(sub_id, name, url, use_hw):
                 "运营商": geo['isp'],
                 "URL": url
             })
+        
+        # 检查是否未匹配别名，若是则加入待处理
+        std_name, matched = match_channel_name(name)
+        if not matched:
+            add_pending_channel(name, sub_id)
+        
+        # 保存结果到数据库
+        with db_session() as session:
+            session.add(ProbeResult(
+                sub_id=sub_id,
+                channel_name=std_name,
+                url=url,
+                score=score,
+                res_tag=res_tag.lower(),
+                probe_time=datetime.datetime.now()
+            ))
+            session.commit()
+
         return {"name": name, "url": url, "score": score, "res_tag": res_tag.lower()}
     except Exception as e:
         with log_lock:
@@ -439,20 +504,27 @@ def test_single_channel(sub_id, name, url, use_hw):
 
 # ---------- 任务运行 ----------
 def run_task(sub_id):
-    config = load_config()
-    sub = next((s for s in config["subscriptions"] if s["id"] == sub_id), None)
-    if not sub or subs_status.get(sub_id, {}).get("running") or not sub.get("enabled", True):
+    # 从数据库加载订阅信息
+    with db_session() as session:
+        sub = session.get(Subscription, sub_id)
+        if not sub or not sub.enabled:
+            return
+        sub_name = sub.name
+        sub_url = sub.url
+        threads = sub.threads or 10
+        res_filter = sub.res_filter or ["sd", "720p", "1080p", "4k", "8k"]
+        use_hw = load_config()["settings"].get("use_hwaccel", True)  # 从 settings 表获取
+
+    if subs_status.get(sub_id, {}).get("running"):
         return
     start_ts = time.time()
-    use_hw = config["settings"]["use_hwaccel"]
-    res_filter = [r.lower() for r in sub.get("res_filter", ["sd", "720p", "1080p", "4k", "8k"])]
     subs_status[sub_id] = {
         "running": True,
         "stop_requested": False,
         "total": 0,
         "current": 0,
         "success": 0,
-        "sub_name": sub['name'],
+        "sub_name": sub_name,
         "logs": [],
         "summary_host": {},
         "summary_city": {},
@@ -470,10 +542,10 @@ def run_task(sub_id):
         }
     }
 
-    # 拉取订阅内容
+    # 拉取订阅内容（与之前相同）
     raw_channels = []
     try:
-        r = requests.get(sub["url"], timeout=15, verify=False)
+        r = requests.get(sub_url, timeout=15, verify=False)
         r.encoding = r.apparent_encoding
         content = r.text
         if "#EXTINF" in content:
@@ -506,7 +578,7 @@ def run_task(sub_id):
 
         subs_status[sub_id]["logs"].append(f"🚀 阶段 2/2: 开始探测 {total_num} 个频道...")
 
-        with ThreadPoolExecutor(max_workers=int(sub.get("threads", 10))) as executor:
+        with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = [executor.submit(test_single_channel, sub_id, n, u, use_hw) for n, u in raw_channels]
             valid_raw = []
             for f in futures:
@@ -528,7 +600,7 @@ def run_task(sub_id):
     duration = format_duration(time.time() - start_ts)
     update_ts = get_now()
 
-    # 生成报告
+    # 生成报告（与之前相同）
     status["logs"].append(" ")
     status["logs"].append("📜 ==================== 探测结算报告 ====================")
     status["logs"].append(f"⏱️ 任务总耗时: {duration} | 有效源: {len(valid_list)} / 成功探测: {status['success']}")
@@ -562,29 +634,12 @@ def run_task(sub_id):
     status["logs"].append("======================================================")
     status["logs"].append(f"🏁 任务完成时间: {get_now()}")
 
-    # 存档状态（包含 valid_list）
-    arch = {
-        "update_time": update_ts,
-        "duration": duration,
-        "logs": status["logs"],
-        "stats": {
-            "total": status["total"],
-            "current": status["current"],
-            "success": status["success"],
-            "banned": len(status["blacklisted_hosts"])
-        },
-        "analytics": status["analytics"],
-        "valid_list": valid_list
-    }
-    with open(os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json"), "w", encoding="utf-8") as f:
-        json.dump(arch, f, ensure_ascii=False)
-
-    # 输出 M3U 和 TXT
+    # 输出 M3U 和 TXT（仍保持文件输出，用于提供下载）
     try:
         m3u_p = os.path.join(OUTPUT_DIR, f"{sub_id}.m3u")
         txt_p = os.path.join(OUTPUT_DIR, f"{sub_id}.txt")
-        epg = config["settings"]["epg_url"]
-        logo = config["settings"]["logo_base"]
+        epg = load_config()["settings"].get("epg_url", "")
+        logo = load_config()["settings"].get("logo_base", "")
         with open(m3u_p, 'w', encoding='utf-8') as fm:
             fm.write(f"#EXTM3U x-tvg-url=\"{epg}\"\n# Updated: {update_ts}\n# Duration: {duration}\n")
             for c in valid_list:
@@ -599,14 +654,12 @@ def run_task(sub_id):
     status["running"] = False
 
     # 触发包含此订阅的聚合任务自动更新
-    config = load_config()
-    for agg in config.get("aggregates", []):
-        if sub_id in agg.get("subscription_ids", []):
-            threading.Thread(target=run_aggregate, args=(agg["id"],), kwargs={"auto": True}).start()
+    with db_session() as session:
+        for agg in session.query(Aggregate).filter(Aggregate.subscription_ids.contains(sub_id)).all():
+            threading.Thread(target=run_aggregate, args=(agg.id,), kwargs={"auto": True}).start()
 
-# ---------- 聚合任务（增强版，支持分组和每个频道多个链接）----------
+# ---------- 聚合任务（从数据库读取探测结果）----------
 def run_aggregate(agg_id, auto=False):
-    # 防止同一聚合任务并发运行
     if aggregates_status.get(agg_id, {}).get("running"):
         return
     aggregates_status[agg_id] = {"running": True, "logs": []}
@@ -616,50 +669,39 @@ def run_aggregate(agg_id, auto=False):
         aggregates_status[agg_id]["logs"].append(f"{ts} - {msg}")
     
     log(f"🚀 聚合任务开始 (自动: {auto})")
-    config = load_config()
-    agg = next((a for a in config.get("aggregates", []) if a["id"] == agg_id), None)
-    if not agg:
-        log("❌ 聚合配置不存在")
-        aggregates_status[agg_id]["running"] = False
-        return
+    
+    with db_session() as session:
+        agg = session.get(Aggregate, agg_id)
+        if not agg or not agg.enabled:
+            log("❌ 聚合配置不存在或未启用")
+            aggregates_status[agg_id]["running"] = False
+            return
 
-    log(f"📋 聚合名称: {agg['name']}")
-    log(f"📦 包含订阅: {', '.join(agg.get('subscription_ids', []))}")
+        log(f"📋 聚合名称: {agg.name}")
+        log(f"📦 包含订阅: {', '.join(agg.subscription_ids or [])}")
 
-    # 读取所有选中订阅的 last_status 文件，收集有效频道
-    channel_map = {}  # 标准名 -> [频道信息列表]
-    total_channels = 0
-    for sub_id in agg.get("subscription_ids", []):
-        status_path = os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json")
-        if not os.path.exists(status_path):
-            log(f"⚠️ 订阅 {sub_id} 状态文件不存在，跳过")
-            continue
-        with open(status_path, 'r', encoding='utf-8') as f:
-            status = json.load(f)
-        valid_list = status.get("valid_list", [])
-        log(f"📡 订阅 {sub_id} 提供了 {len(valid_list)} 个有效源")
-        for item in valid_list:
-            std_name, matched = match_channel_name(item["name"])
-            if matched:
-                log(f"🔤 别名匹配: '{item['name']}' -> '{std_name}'")
-            else:
-                log(f"🔤 未匹配别名: '{item['name']}' 保持原样")
-            item_copy = item.copy()
-            item_copy["name"] = std_name
-            if std_name not in channel_map:
-                channel_map[std_name] = []
-            channel_map[std_name].append(item_copy)
-            total_channels += 1
+        # 从 ProbeResult 表中获取最新探测结果（每个订阅、每个频道取最高分）
+        # 这里简化处理：查询所有符合条件的记录，然后在内存中聚合
+        results = session.query(ProbeResult).filter(ProbeResult.sub_id.in_(agg.subscription_ids)).all()
+        log(f"📊 共从数据库读取 {len(results)} 条原始探测结果")
 
-    log(f"📊 共收集到 {total_channels} 个原始频道，去重后 {len(channel_map)} 个标准频道")
+        # 按标准名聚合，取最高分
+        channel_map = {}
+        for r in results:
+            std_name, matched = match_channel_name(r.channel_name)
+            if std_name not in channel_map or r.score > channel_map[std_name]['score']:
+                channel_map[std_name] = {
+                    "name": std_name,
+                    "url": r.url,
+                    "score": r.score,
+                    "res_tag": r.res_tag
+                }
 
-    # 对每个频道的列表按评分降序排序
-    for name in channel_map:
-        channel_map[name].sort(key=lambda x: x['score'], reverse=True)
+        log(f"📊 聚合后得到 {len(channel_map)} 个标准频道")
 
-    # 读取 demo.txt 获取顺序和分组信息
+    # 读取 demo.txt 获取顺序和分组信息（与之前相同）
     ordered_names = []
-    group_map = {}  # 标准名 -> 分组名称
+    group_map = {}
     if os.path.exists(DEMO_FILE):
         current_group = "未分组"
         with open(DEMO_FILE, 'r', encoding='utf-8') as f:
@@ -679,36 +721,34 @@ def run_aggregate(agg_id, auto=False):
         ordered_names = sorted(channel_map.keys())
         log(f"📋 未找到 demo.txt，使用字母顺序")
 
-    # 按顺序生成最终列表（展平所有频道的所有链接）
+    # 按顺序生成最终列表
     final_list = []
-    matched_count = 0
     for name in ordered_names:
         if name in channel_map:
-            for item in channel_map[name]:
-                item["group"] = group_map.get(name, "未分组")
-                final_list.append(item)
-                matched_count += 1
-        else:
-            log(f"⚠️ demo.txt 中的频道 '{name}' 在源中未找到")
+            item = channel_map[name]
+            item["group"] = group_map.get(name, "未分组")
+            final_list.append(item)
 
     log(f"✅ 最终生成 {len(final_list)} 个有效链接")
 
     # 确定使用的 EPG URL
-    epg_url = config["settings"]["epg_url"]  # 默认
-    epg_agg_id = agg.get("epg_aggregate_id")
+    config = load_config()
+    epg_url = config["settings"].get("epg_url", "")
+    epg_agg_id = agg.epg_aggregate_id
     if epg_agg_id:
-        epg_agg = next((e for e in config.get("epg_aggregates", []) if e["id"] == epg_agg_id), None)
-        if epg_agg:
-            epg_url = f"{request.host_url.rstrip('/')}/epg/{epg_agg_id}.xml"
-            log(f"📺 使用 EPG 聚合: {epg_agg['name']} -> {epg_url}")
-        else:
-            log(f"⚠️ 指定的 EPG 聚合不存在，使用全局 EPG")
+        with db_session() as session:
+            epg_agg = session.get(EPGAggregate, epg_agg_id)
+            if epg_agg:
+                epg_url = f"{request.host_url.rstrip('/')}/epg/{epg_agg_id}.xml"
+                log(f"📺 使用 EPG 聚合: {epg_agg.name} -> {epg_url}")
+            else:
+                log(f"⚠️ 指定的 EPG 聚合不存在，使用全局 EPG")
     else:
         log(f"📺 使用全局 EPG: {epg_url}")
 
-    # 生成输出文件
+    # 生成输出文件（与之前相同）
     update_ts = get_now()
-    logo_base = config["settings"]["logo_base"]
+    logo_base = config["settings"].get("logo_base", "")
     m3u_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.m3u")
     txt_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}.txt")
     
@@ -728,24 +768,17 @@ def run_aggregate(agg_id, auto=False):
 
     log(f"💾 文件已写入: {m3u_path}, {txt_path}")
 
-    # 记录聚合状态
-    agg_status = {
-        "update_time": update_ts,
-        "total": len(final_list),
-        "subscriptions": agg["subscription_ids"],
-        "files": {
-            "m3u": f"/aggregate/{agg_id}.m3u",
-            "txt": f"/aggregate/{agg_id}.txt"
-        }
-    }
-    agg_status_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg_id}_status.json")
-    with open(agg_status_path, 'w', encoding='utf-8') as f:
-        json.dump(agg_status, f, ensure_ascii=False)
+    # 更新聚合最后更新时间
+    with db_session() as session:
+        agg = session.get(Aggregate, agg_id)
+        if agg:
+            agg.last_update = datetime.datetime.now()
+            session.commit()
 
-    log(f"🏁 聚合任务完成，耗时 {format_duration(time.time() - start_time)}")
+    log(f"🏁 聚合任务完成")
     aggregates_status[agg_id]["running"] = False
 
-# ---------- EPG 聚合（增强版：自动解压 gzip、收集频道，并添加 display-name）----------
+# ---------- EPG 聚合（保持不变，因为不涉及数据库）----------
 def run_epg_aggregate(epg_agg_id, auto=False):
     if epg_aggregates_status.get(epg_agg_id, {}).get("running"):
         return
@@ -768,18 +801,14 @@ def run_epg_aggregate(epg_agg_id, auto=False):
     cache_days = epg_agg.get("cache_days", 3)
     log(f"📅 缓存天数: {cache_days}")
 
-    # 计算需要的日期范围
     today = datetime.date.today()
-    date_list = [today + datetime.timedelta(days=i) for i in range(-1, cache_days)]  # 前一天到 cache_days-1 天后
+    date_list = [today + datetime.timedelta(days=i) for i in range(-1, cache_days)]
     date_strs = [d.strftime('%Y%m%d') for d in date_list]
     log(f"📅 需要包含的日期: {', '.join(date_strs)}")
 
-    # 存储所有节目的字典，键为 (channel, start, title) 用于去重
     programmes = {}
-    # 存储所有频道的字典，键为频道ID，值为 (channel_element, standard_name)
     channels_dict = {}
 
-    # 下载并解析每个源
     for idx, source_url in enumerate(epg_agg['sources']):
         log(f"⬇️ 正在下载源 {idx+1}: {source_url}")
         try:
@@ -788,20 +817,15 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 log(f"⚠️ 源 {source_url} 返回状态码 {resp.status_code}，跳过")
                 continue
             content = resp.content
-
-            # 处理可能为 gzip 压缩的内容（根据 URL 后缀或 Content-Encoding 头部）
             is_gz = source_url.endswith('.gz') or resp.headers.get('Content-Encoding') == 'gzip'
             if is_gz:
                 try:
-                    # 尝试解压
                     buf = BytesIO(content)
                     with gzip.GzipFile(fileobj=buf) as gz_file:
                         content = gz_file.read()
                     log(f"📦 检测到 gzip 压缩，已解压")
                 except Exception as e:
                     log(f"⚠️ 解压失败: {str(e)}，尝试直接解析")
-
-            # 尝试解析 XML
             try:
                 tree = ET.parse(BytesIO(content))
                 root = tree.getroot()
@@ -809,7 +833,6 @@ def run_epg_aggregate(epg_agg_id, auto=False):
                 log(f"❌ 解析 XML 失败: {str(e)}")
                 continue
 
-            # 收集频道元素
             channels_added = 0
             for channel in root.findall('channel'):
                 ch_id = channel.get('id')
@@ -821,16 +844,14 @@ def run_epg_aggregate(epg_agg_id, auto=False):
             if channels_added > 0:
                 log(f"📺 源 {idx+1} 添加了 {channels_added} 个频道")
 
-            # 遍历所有 programme
             count = 0
             for prog in root.findall('programme'):
                 start = prog.get('start')
                 channel = prog.get('channel')
                 title_elem = prog.find('title')
                 title = title_elem.text if title_elem is not None else ''
-                # 检查日期是否在范围内
                 if start and len(start) >= 8:
-                    prog_date = start[:8]  # YYYYMMDD
+                    prog_date = start[:8]
                     if prog_date in date_strs:
                         key = (channel, start, title)
                         if key not in programmes:
@@ -842,42 +863,34 @@ def run_epg_aggregate(epg_agg_id, auto=False):
 
     log(f"📊 共收集到 {len(channels_dict)} 个频道，{len(programmes)} 个节目")
 
-    # 构建新的 XML
     new_root = ET.Element('tv')
-    # 先添加所有频道（深拷贝并添加 display-name）
     for ch_id, (ch_elem, std_name) in channels_dict.items():
-        # 深拷贝原始频道元素
         new_ch = copy.deepcopy(ch_elem)
         if std_name:
-            # 添加 display-name 元素（标准名）
             dn = ET.SubElement(new_ch, 'display-name')
             dn.text = std_name
         new_root.append(new_ch)
-
-    # 再添加所有节目
     for prog in programmes.values():
-        # 节目元素直接使用，无需深拷贝（因为我们未修改）
         new_root.append(prog)
 
-    # 生成 XML 文件
     update_ts = get_now()
     xml_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}.xml")
-    
-    # 写入 XML
     tree = ET.ElementTree(new_root)
     tree.write(xml_path, encoding='utf-8', xml_declaration=True)
-
     log(f"💾 XML 已保存: {xml_path}")
 
-    # 记录状态
+    with db_session() as session:
+        epg = session.get(EPGAggregate, epg_agg_id)
+        if epg:
+            epg.last_update = datetime.datetime.now()
+            session.commit()
+
     epg_status = {
         "update_time": update_ts,
         "total": len(programmes),
         "channels": len(channels_dict),
         "sources": epg_agg['sources'],
-        "files": {
-            "xml": f"/epg/{epg_agg_id}.xml"
-        }
+        "files": {"xml": f"/epg/{epg_agg_id}.xml"}
     }
     status_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}_status.json")
     with open(status_path, 'w', encoding='utf-8') as f:
@@ -893,15 +906,15 @@ def clear_sub_jobs(sub_id):
             scheduler.remove_job(job.id)
 
 def schedule_subscription(sub):
-    sub_id = sub["id"]
+    sub_id = sub.id
     clear_sub_jobs(sub_id)
-    if not sub.get("enabled", True):
+    if not sub.enabled:
         return
-    mode = sub.get("schedule_mode", "none")
+    mode = sub.schedule_mode
     if mode == "none":
         return
     elif mode == "fixed":
-        times = sub.get("fixed_times", "").split(",")
+        times = (sub.fixed_times or "").split(",")
         for t in times:
             t = t.strip()
             if not t:
@@ -921,7 +934,7 @@ def schedule_subscription(sub):
             except Exception as e:
                 app.logger.error(f"调度 fixed 任务失败 {sub_id} {t}: {e}")
     elif mode == "interval":
-        hours = int(sub.get("interval_hours", 1))
+        hours = sub.interval_hours or 1
         job_id = f"{sub_id}_interval"
         scheduler.add_job(
             func=run_task,
@@ -933,22 +946,21 @@ def schedule_subscription(sub):
         )
 
 def reschedule_all():
-    config = load_config()
-    for sub in config["subscriptions"]:
-        schedule_subscription(sub)
+    with db_session() as session:
+        for sub in session.query(Subscription).all():
+            schedule_subscription(sub)
 
-# ---------- EPG 聚合任务调度 ----------
 def clear_epg_jobs(epg_agg_id):
     for job in scheduler.get_jobs():
         if job.id.startswith(f"epg_{epg_agg_id}"):
             scheduler.remove_job(job.id)
 
 def schedule_epg_aggregation(epg_agg):
-    epg_id = epg_agg["id"]
+    epg_id = epg_agg.id
     clear_epg_jobs(epg_id)
-    if not epg_agg.get("enabled", True):
+    if not epg_agg.enabled:
         return
-    interval = int(epg_agg.get("update_interval", 24))
+    interval = epg_agg.update_interval or 24
     job_id = f"epg_{epg_id}_interval"
     scheduler.add_job(
         func=run_epg_aggregate,
@@ -961,9 +973,9 @@ def schedule_epg_aggregation(epg_agg):
     )
 
 def reschedule_epg_all():
-    config = load_config()
-    for epg_agg in config.get("epg_aggregates", []):
-        schedule_epg_aggregation(epg_agg)
+    with db_session() as session:
+        for epg_agg in session.query(EPGAggregate).all():
+            schedule_epg_aggregation(epg_agg)
 
 # ---------- Flask 路由 ----------
 @app.route('/')
@@ -1034,19 +1046,30 @@ def network_test():
 
 @app.route('/api/subs', methods=['GET', 'POST'])
 def handle_subs():
-    config = load_config()
     if request.method == 'POST':
-        new_sub = request.json
-        if not new_sub.get("id"):
-            new_sub["id"] = str(uuid.uuid4())[:8]
-            config["subscriptions"].append(new_sub)
-        else:
-            for i, s in enumerate(config["subscriptions"]):
-                if s["id"] == new_sub["id"]:
-                    config["subscriptions"][i] = new_sub
-        save_config(config)
+        data = request.json
+        with db_session() as session:
+            if not data.get("id"):
+                data["id"] = str(uuid.uuid4())[:8]
+                sub = Subscription(**data)
+                session.add(sub)
+            else:
+                sub = session.get(Subscription, data["id"])
+                if sub:
+                    for k, v in data.items():
+                        setattr(sub, k, v)
+            session.commit()
         return jsonify({"status": "ok"})
-    return jsonify({"subs": config["subscriptions"], "settings": config["settings"]})
+    else:
+        with db_session() as session:
+            subs = [{
+                "id": s.id, "name": s.name, "url": s.url, "threads": s.threads,
+                "enabled": s.enabled, "schedule_mode": s.schedule_mode,
+                "fixed_times": s.fixed_times, "interval_hours": s.interval_hours,
+                "res_filter": s.res_filter
+            } for s in session.query(Subscription).all()]
+            settings = {s.key: s.value for s in session.query(Setting).all()}
+            return jsonify({"subs": subs, "settings": settings})
 
 @app.route('/api/status/<sub_id>')
 def get_status(sub_id):
@@ -1062,6 +1085,7 @@ def get_status(sub_id):
             "banned_count": len(s.get("blacklisted_hosts", [])),
             "analytics": s["analytics"]
         })
+    # 尝试从存档文件中读取（兼容旧方式）
     archive_path = os.path.join(OUTPUT_DIR, f"last_status_{sub_id}.json")
     if os.path.exists(archive_path):
         with open(archive_path, 'r', encoding='utf-8') as f:
@@ -1090,9 +1114,15 @@ def stop_api(sub_id):
 
 @app.route('/api/settings', methods=['POST'])
 def save_settings():
-    config = load_config()
-    config["settings"] = request.json
-    save_config(config)
+    data = request.json
+    with db_session() as session:
+        for key, value in data.items():
+            setting = session.get(Setting, key)
+            if setting:
+                setting.value = str(value)
+            else:
+                session.add(Setting(key=key, value=str(value)))
+        session.commit()
     return jsonify({"status": "ok"})
 
 @app.route('/api/hw_test')
@@ -1117,9 +1147,11 @@ def hw_test():
 
 @app.route('/api/subs/delete/<sub_id>')
 def delete_sub(sub_id):
-    config = load_config()
-    config["subscriptions"] = [s for s in config["subscriptions"] if s["id"] != sub_id]
-    save_config(config)
+    with db_session() as session:
+        sub = session.get(Subscription, sub_id)
+        if sub:
+            session.delete(sub)
+            session.commit()
     clear_sub_jobs(sub_id)
     return jsonify({"status": "ok"})
 
@@ -1130,37 +1162,35 @@ def get_sub_file(sub_id, ext):
 # ---------- 聚合相关 API ----------
 @app.route('/api/aggregates', methods=['GET', 'POST'])
 def api_aggregates():
-    config = load_config()
     if request.method == 'POST':
         data = request.json
-        agg_list = config.get("aggregates", [])
-        if not data.get("id"):
-            data["id"] = str(uuid.uuid4())[:8]
-            agg_list.append(data)
-        else:
-            for i, a in enumerate(agg_list):
-                if a["id"] == data["id"]:
-                    agg_list[i] = data
-        config["aggregates"] = agg_list
-        save_config(config)
+        with db_session() as session:
+            if not data.get("id"):
+                data["id"] = str(uuid.uuid4())[:8]
+                agg = Aggregate(**data)
+                session.add(agg)
+            else:
+                agg = session.get(Aggregate, data["id"])
+                if agg:
+                    for k, v in data.items():
+                        setattr(agg, k, v)
+            session.commit()
         return jsonify({"status": "ok"})
     else:
-        agg_list = config.get("aggregates", [])
-        result = []
-        for agg in agg_list:
-            status_path = os.path.join(OUTPUT_DIR, f"aggregate_{agg['id']}_status.json")
-            last_update = "从未"
-            if os.path.exists(status_path):
-                try:
-                    with open(status_path, 'r', encoding='utf-8') as f:
-                        st = json.load(f)
-                        last_update = st.get("update_time", "从未")
-                except:
-                    pass
-            agg_copy = agg.copy()
-            agg_copy["last_update"] = last_update
-            result.append(agg_copy)
-        return jsonify(result)
+        with db_session() as session:
+            result = []
+            for agg in session.query(Aggregate).all():
+                agg_dict = {
+                    "id": agg.id,
+                    "name": agg.name,
+                    "subscription_ids": agg.subscription_ids,
+                    "strategy": agg.strategy,
+                    "enabled": agg.enabled,
+                    "epg_aggregate_id": agg.epg_aggregate_id,
+                    "last_update": agg.last_update.strftime('%Y-%m-%d %H:%M:%S') if agg.last_update else "从未"
+                }
+                result.append(agg_dict)
+            return jsonify(result)
 
 @app.route('/api/aggregate/run/<agg_id>')
 def run_aggregate_api(agg_id):
@@ -1174,10 +1204,11 @@ def get_aggregate_log(agg_id):
 
 @app.route('/api/aggregate/delete/<agg_id>')
 def delete_aggregate(agg_id):
-    config = load_config()
-    agg_list = config.get("aggregates", [])
-    config["aggregates"] = [a for a in agg_list if a["id"] != agg_id]
-    save_config(config)
+    with db_session() as session:
+        agg = session.get(Aggregate, agg_id)
+        if agg:
+            session.delete(agg)
+            session.commit()
     return jsonify({"status": "ok"})
 
 @app.route('/aggregate/<agg_id>.<ext>')
@@ -1187,37 +1218,35 @@ def get_aggregate_file(agg_id, ext):
 # ---------- EPG 聚合相关 API ----------
 @app.route('/api/epg_aggregates', methods=['GET', 'POST'])
 def api_epg_aggregates():
-    config = load_config()
     if request.method == 'POST':
         data = request.json
-        epg_list = config.get("epg_aggregates", [])
-        if not data.get("id"):
-            data["id"] = str(uuid.uuid4())[:8]
-            epg_list.append(data)
-        else:
-            for i, e in enumerate(epg_list):
-                if e["id"] == data["id"]:
-                    epg_list[i] = data
-        config["epg_aggregates"] = epg_list
-        save_config(config)
+        with db_session() as session:
+            if not data.get("id"):
+                data["id"] = str(uuid.uuid4())[:8]
+                epg = EPGAggregate(**data)
+                session.add(epg)
+            else:
+                epg = session.get(EPGAggregate, data["id"])
+                if epg:
+                    for k, v in data.items():
+                        setattr(epg, k, v)
+            session.commit()
         return jsonify({"status": "ok"})
     else:
-        epg_list = config.get("epg_aggregates", [])
-        result = []
-        for epg in epg_list:
-            status_path = os.path.join(OUTPUT_DIR, f"epg_{epg['id']}_status.json")
-            last_update = "从未"
-            if os.path.exists(status_path):
-                try:
-                    with open(status_path, 'r', encoding='utf-8') as f:
-                        st = json.load(f)
-                        last_update = st.get("update_time", "从未")
-                except:
-                    pass
-            epg_copy = epg.copy()
-            epg_copy["last_update"] = last_update
-            result.append(epg_copy)
-        return jsonify(result)
+        with db_session() as session:
+            result = []
+            for epg in session.query(EPGAggregate).all():
+                epg_dict = {
+                    "id": epg.id,
+                    "name": epg.name,
+                    "sources": epg.sources,
+                    "cache_days": epg.cache_days,
+                    "update_interval": epg.update_interval,
+                    "enabled": epg.enabled,
+                    "last_update": epg.last_update.strftime('%Y-%m-%d %H:%M:%S') if epg.last_update else "从未"
+                }
+                result.append(epg_dict)
+            return jsonify(result)
 
 @app.route('/api/epg_aggregate/run/<epg_id>')
 def run_epg_aggregate_api(epg_id):
@@ -1231,10 +1260,11 @@ def get_epg_aggregate_log(epg_id):
 
 @app.route('/api/epg_aggregate/delete/<epg_id>')
 def delete_epg_aggregate(epg_id):
-    config = load_config()
-    epg_list = config.get("epg_aggregates", [])
-    config["epg_aggregates"] = [e for e in epg_list if e["id"] != epg_id]
-    save_config(config)
+    with db_session() as session:
+        epg = session.get(EPGAggregate, epg_id)
+        if epg:
+            session.delete(epg)
+            session.commit()
     return jsonify({"status": "ok"})
 
 @app.route('/epg/<epg_id>.xml')
@@ -1254,17 +1284,14 @@ def epg_check(epg_id):
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
-        # 查找匹配的频道（忽略大小写，部分匹配）
         channels = []
         for ch in root.findall('channel'):
             ch_id = ch.get('id', '')
             if channel.lower() in ch_id.lower():
                 channels.append(ch_id)
-            # 也检查 display-name
             for dn in ch.findall('display-name'):
                 if channel.lower() in (dn.text or '').lower():
                     channels.append(ch_id)
-        # 查找匹配的节目
         programmes = []
         for prog in root.findall('programme'):
             prog_ch = prog.get('channel', '')
@@ -1278,7 +1305,7 @@ def epg_check(epg_id):
             "channel_exists": len(channels) > 0,
             "programme_count": len(programmes),
             "matched_channels": list(set(channels)),
-            "matched_programmes_sample": programmes[:5]  # 只返回前5个作为示例
+            "matched_programmes_sample": programmes[:5]
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1286,10 +1313,14 @@ def epg_check(epg_id):
 # ---------- 待处理频道 API ----------
 @app.route('/api/pending', methods=['GET'])
 def get_pending():
-    pending = load_pending()
-    # 按出现次数降序排序
-    sorted_pending = sorted(pending.items(), key=lambda x: x[1]['count'], reverse=True)
-    return jsonify([{"name": k, **v} for k, v in sorted_pending])
+    with db_session() as session:
+        pendings = session.query(PendingChannel).order_by(PendingChannel.count.desc()).all()
+        return jsonify([{
+            "name": p.raw_name,
+            "count": p.count,
+            "first_seen": p.first_seen.strftime('%Y-%m-%d %H:%M:%S'),
+            "sub_ids": p.sub_ids
+        } for p in pendings])
 
 @app.route('/api/pending/ignore', methods=['POST'])
 def ignore_pending():
@@ -1297,11 +1328,11 @@ def ignore_pending():
     name = data.get('name')
     if not name:
         return jsonify({"error": "缺少频道名"}), 400
-    with pending_lock:
-        pending = load_pending()
-        if name in pending:
-            del pending[name]
-            save_pending(pending)
+    with db_session() as session:
+        pc = session.query(PendingChannel).filter_by(raw_name=name).first()
+        if pc:
+            session.delete(pc)
+            session.commit()
     return jsonify({"status": "ok"})
 
 @app.route('/api/pending/set_alias', methods=['POST'])
@@ -1312,16 +1343,13 @@ def set_alias():
     aliases = data.get('aliases', [])
     if not raw_name or not main_name:
         return jsonify({"error": "缺少必要参数"}), 400
-    # 将 raw_name 作为别名之一加入
     all_aliases = list(set([raw_name] + aliases))
-    # 追加到 alias.txt
     append_alias(main_name, all_aliases)
-    # 从待处理列表中移除
-    with pending_lock:
-        pending = load_pending()
-        if raw_name in pending:
-            del pending[raw_name]
-            save_pending(pending)
+    with db_session() as session:
+        pc = session.query(PendingChannel).filter_by(raw_name=raw_name).first()
+        if pc:
+            session.delete(pc)
+            session.commit()
     return jsonify({"status": "ok"})
 
 @app.route('/api/pending/set_group', methods=['POST'])
@@ -1331,17 +1359,18 @@ def set_group():
     group_name = data.get('group_name')
     if not channel_name or not group_name:
         return jsonify({"error": "缺少必要参数"}), 400
-    # 添加到 demo.txt
     append_to_demo(channel_name, group_name)
-    # 从待处理列表中移除
-    with pending_lock:
-        pending = load_pending()
-        if channel_name in pending:
-            del pending[channel_name]
-            save_pending(pending)
+    with db_session() as session:
+        pc = session.query(PendingChannel).filter_by(raw_name=channel_name).first()
+        if pc:
+            session.delete(pc)
+            session.commit()
     return jsonify({"status": "ok"})
 
 # ---------- 启动时初始化调度 ----------
+scheduler = BackgroundScheduler()
+scheduler.start()
+
 with app.app_context():
     reschedule_all()
     reschedule_epg_all()
