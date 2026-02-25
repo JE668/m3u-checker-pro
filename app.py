@@ -1456,6 +1456,42 @@ def get_aliases(main_name):
                     break
     return jsonify(aliases)
 
+@app.route('/api/pending/process', methods=['POST'])
+def process_pending():
+    data = request.json
+    raw_name = data.get('raw_name')
+    if not raw_name:
+        return jsonify({"error": "缺少原始频道名"}), 400
+    
+    main_name = data.get('main_name')
+    aliases = data.get('aliases', [])
+    group_name = data.get('group_name')
+    
+    success = False
+    
+    # 处理别名
+    if main_name:
+        all_aliases = list(set([raw_name] + aliases))
+        append_alias(main_name, all_aliases)
+        success = True
+    
+    # 处理分组
+    if group_name:
+        append_to_demo(raw_name, group_name)
+        success = True
+    
+    if not success:
+        return jsonify({"error": "未提供任何操作"}), 400
+    
+    # 从待处理列表中移除
+    with db_session() as session:
+        pc = session.query(PendingChannel).filter_by(raw_name=raw_name).first()
+        if pc:
+            session.delete(pc)
+            session.commit()
+    
+    return jsonify({"status": "ok"})
+
 @app.route('/api/pending/ignore', methods=['POST'])
 def ignore_pending():
     data = request.json
