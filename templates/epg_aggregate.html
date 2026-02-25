@@ -99,6 +99,13 @@
             border-radius: 20px;
             font-size: 11px;
         }
+        .check-result {
+            margin-top: 10px;
+            padding: 15px;
+            border-radius: 12px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+        }
     </style>
 </head>
 <body>
@@ -125,6 +132,7 @@
                             <th>更新间隔</th>
                             <th>最后更新</th>
                             <th>链接</th>
+                            <th>检查</th>
                             <th>日志</th>
                             <th>操作</th>
                         </tr>
@@ -134,7 +142,7 @@
             </div>
         </div>
 
-        <!-- EPG文件链接展示区 -->
+        <!-- EPG文件链接展示区（只显示 XML） -->
         <div class="glass-card mt-4" id="linksPanel" style="display: none;">
             <h5 class="fw-bold mb-3"><i class="bi bi-link-45deg me-2"></i>EPG文件链接</h5>
             <div class="link-item">
@@ -142,15 +150,27 @@
                 <input type="text" id="epgXmlLink" readonly class="form-control">
                 <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgXmlLink')"><i class="bi bi-clipboard"></i> 复制</button>
             </div>
-            <div class="link-item">
-                <span class="badge bg-secondary">GZ</span>
-                <input type="text" id="epgGzLink" readonly class="form-control">
-                <button class="btn btn-sm btn-outline-primary" onclick="copyLink('epgGzLink')"><i class="bi bi-clipboard"></i> 复制</button>
+        </div>
+
+        <!-- 检查模态框 -->
+        <div class="modal fade" id="checkModal" tabindex="-1">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content p-4" style="border-radius: 35px;">
+                    <h5 class="fw-800 mb-4 text-center"><i class="bi bi-search me-2"></i>EPG频道检查</h5>
+                    <div class="mb-3">
+                        <label class="fw-bold small text-muted">频道名称</label>
+                        <input type="text" id="checkChannelName" class="form-control bg-light border-0 rounded-3" placeholder="例如: CCTV-1">
+                    </div>
+                    <div id="checkResult" class="check-result d-none"></div>
+                    <div class="d-flex justify-content-end pt-3">
+                        <button class="btn btn-grad btn-primary-grad px-5" id="doCheckBtn"><i class="bi bi-check-circle me-2"></i>检查</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- 编辑模态框 -->
+    <!-- 编辑模态框（保持不变） -->
     <div class="modal fade" id="editModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4" style="border-radius: 35px; background: var(--glass); backdrop-filter: blur(15px);">
@@ -186,7 +206,7 @@
         </div>
     </div>
 
-    <!-- 日志模态框 -->
+    <!-- 日志模态框（保持不变） -->
     <div class="modal fade" id="logModal" tabindex="-1">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content" style="border-radius: 35px;">
@@ -206,6 +226,8 @@
         let epgAggregates = [];
         const editModal = new bootstrap.Modal(document.getElementById('editModal'));
         const logModal = new bootstrap.Modal(document.getElementById('logModal'));
+        const checkModal = new bootstrap.Modal(document.getElementById('checkModal'));
+        let currentCheckEpgId = null;
 
         async function loadData() {
             const res = await fetch('/api/epg_aggregates');
@@ -230,6 +252,9 @@
                         <button class="btn btn-sm btn-outline-info" onclick="showLinks('${epg.id}')" title="查看链接"><i class="bi bi-link"></i></button>
                     </td>
                     <td>
+                        <button class="btn btn-sm btn-outline-warning" onclick="openCheck('${epg.id}')" title="检查频道"><i class="bi bi-search"></i></button>
+                    </td>
+                    <td>
                         <button class="btn btn-sm btn-outline-secondary" onclick="showLog('${epg.id}')" title="查看日志"><i class="bi bi-file-text"></i></button>
                     </td>
                     <td>
@@ -245,10 +270,51 @@
         function showLinks(epgId) {
             const baseUrl = window.location.origin;
             document.getElementById('epgXmlLink').value = `${baseUrl}/epg/${epgId}.xml`;
-            // 修改为 .xml.gz 格式
-            document.getElementById('epgGzLink').value = `${baseUrl}/epg/${epgId}.xml.gz`;
             document.getElementById('linksPanel').style.display = 'block';
         }
+
+        function openCheck(epgId) {
+            currentCheckEpgId = epgId;
+            document.getElementById('checkChannelName').value = '';
+            document.getElementById('checkResult').classList.add('d-none');
+            checkModal.show();
+        }
+
+        document.getElementById('doCheckBtn').onclick = async () => {
+            const channel = document.getElementById('checkChannelName').value.trim();
+            if (!channel) {
+                alert('请输入频道名称');
+                return;
+            }
+            const resultDiv = document.getElementById('checkResult');
+            resultDiv.classList.remove('d-none');
+            resultDiv.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm text-primary"></div> 检查中...</div>';
+            try {
+                const res = await fetch(`/api/epg_check/${currentCheckEpgId}?channel=${encodeURIComponent(channel)}`);
+                const data = await res.json();
+                if (data.error) {
+                    resultDiv.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                } else {
+                    let html = `
+                        <p><strong>频道存在:</strong> ${data.channel_exists ? '✅ 是' : '❌ 否'}</p>
+                        <p><strong>节目数量:</strong> ${data.programme_count}</p>
+                    `;
+                    if (data.matched_channels && data.matched_channels.length > 0) {
+                        html += `<p><strong>匹配的频道ID:</strong> ${data.matched_channels.join(', ')}</p>`;
+                    }
+                    if (data.matched_programmes_sample && data.matched_programmes_sample.length > 0) {
+                        html += '<p><strong>节目示例:</strong></p><ul>';
+                        data.matched_programmes_sample.forEach(p => {
+                            html += `<li>[${p.start}] ${p.title} (频道: ${p.channel})</li>`;
+                        });
+                        html += '</ul>';
+                    }
+                    resultDiv.innerHTML = html;
+                }
+            } catch (e) {
+                resultDiv.innerHTML = `<div class="alert alert-danger">请求失败: ${e.message}</div>`;
+            }
+        };
 
         async function showLog(epgId) {
             const res = await fetch(`/api/epg_aggregate/log/${epgId}`);
