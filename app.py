@@ -1387,6 +1387,19 @@ def epg_check(epg_id):
         return jsonify({"error": str(e)}), 500
 
 # ---------- 待处理频道 API ----------
+@app.route('/api/groups')
+def get_groups():
+    groups = []
+    if os.path.exists(DEMO_FILE):
+        with open(DEMO_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and ',#genre#' in line:
+                    group_name = line.split(',')[0].strip()
+                    groups.append(group_name)
+    return jsonify(groups)
+
+# ---------- 待处理频道 API ----------
 @app.route('/api/pending', methods=['GET'])
 def get_pending():
     with db_session() as session:
