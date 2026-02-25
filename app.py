@@ -1,4 +1,4 @@
-import os, subprocess, json, threading, time, socket, datetime, uuid, csv, re, gzip
+import os, subprocess, json, threading, time, socket, datetime, uuid, csv, re, gzip, copy
 import requests, urllib3, psutil
 from flask import Flask, render_template, request, jsonify, send_from_directory, make_response, redirect
 from urllib.parse import urlparse
@@ -17,6 +17,7 @@ OUTPUT_DIR = os.path.join(DATA_DIR, "output")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 ALIAS_FILE = os.path.join(DATA_DIR, "alias.txt")
 DEMO_FILE = os.path.join(DATA_DIR, "demo.txt")
+PENDING_FILE = os.path.join(DATA_DIR, "pending.json")
 EPG_CACHE_DIR = os.path.join(DATA_DIR, "epg_cache")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -77,6 +78,76 @@ def match_channel_name(raw_name):
                 if p.search(raw_name):
                     return main_name, True
     return raw_name, False
+
+# ---------- 待处理频道管理 ----------
+pending_lock = threading.Lock()
+
+def load_pending():
+    if os.path.exists(PENDING_FILE):
+        with open(PENDING_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_pending(pending):
+    with open(PENDING_FILE, 'w', encoding='utf-8') as f:
+        json.dump(pending, f, indent=2, ensure_ascii=False)
+
+def add_pending_channel(raw_name, sub_id):
+    with pending_lock:
+        pending = load_pending()
+        key = raw_name.strip()
+        if key not in pending:
+            pending[key] = {
+                "count": 1,
+                "first_seen": get_now(),
+                "sub_ids": [sub_id]
+            }
+        else:
+            pending[key]["count"] += 1
+            if sub_id not in pending[key]["sub_ids"]:
+                pending[key]["sub_ids"].append(sub_id)
+        save_pending(pending)
+
+# ---------- 别名和 demo 文件更新 ----------
+def append_alias(main_name, aliases):
+    """向 alias.txt 追加新别名规则"""
+    with file_lock:
+        with open(ALIAS_FILE, 'a', encoding='utf-8') as f:
+            line = f"{main_name}," + ",".join(aliases) + "\n"
+            f.write(line)
+    # 强制重新加载别名
+    global ALIAS_CACHE, ALIAS_MTIME
+    ALIAS_CACHE = None
+    ALIAS_MTIME = None
+
+def append_to_demo(channel_name, group_name):
+    """向 demo.txt 追加频道到指定分组（如果分组不存在则创建）"""
+    with file_lock:
+        # 读取现有内容
+        if os.path.exists(DEMO_FILE):
+            with open(DEMO_FILE, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        else:
+            lines = []
+        # 查找分组位置
+        group_line = f"{group_name},#genre#\n"
+        group_index = -1
+        for i, line in enumerate(lines):
+            if line.strip() == group_line.strip():
+                group_index = i
+                break
+        if group_index == -1:
+            # 分组不存在，在末尾添加
+            lines.append(group_line)
+            lines.append(channel_name + "\n")
+        else:
+            # 分组存在，在分组下一行插入（如果已有频道，则插入到该分组最后一个频道之后）
+            insert_pos = group_index + 1
+            while insert_pos < len(lines) and not lines[insert_pos].startswith('#') and ',' not in lines[insert_pos]:
+                insert_pos += 1
+            lines.insert(insert_pos, channel_name + "\n")
+        with open(DEMO_FILE, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
 
 # ---------- 工具函数 ----------
 def get_now():
@@ -674,7 +745,7 @@ def run_aggregate(agg_id, auto=False):
     log(f"🏁 聚合任务完成，耗时 {format_duration(time.time() - start_time)}")
     aggregates_status[agg_id]["running"] = False
 
-# ---------- EPG 聚合（增强版：自动解压 gzip、收集频道）----------
+# ---------- EPG 聚合（增强版：自动解压 gzip、收集频道，并添加 display-name）----------
 def run_epg_aggregate(epg_agg_id, auto=False):
     if epg_aggregates_status.get(epg_agg_id, {}).get("running"):
         return
@@ -705,7 +776,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
 
     # 存储所有节目的字典，键为 (channel, start, title) 用于去重
     programmes = {}
-    # 存储所有频道的字典，键为频道ID，值为channel元素
+    # 存储所有频道的字典，键为频道ID，值为 (channel_element, standard_name)
     channels_dict = {}
 
     # 下载并解析每个源
@@ -742,9 +813,11 @@ def run_epg_aggregate(epg_agg_id, auto=False):
             channels_added = 0
             for channel in root.findall('channel'):
                 ch_id = channel.get('id')
-                if ch_id and ch_id not in channels_dict:
-                    channels_dict[ch_id] = channel
-                    channels_added += 1
+                if ch_id:
+                    std_name, matched = match_channel_name(ch_id)
+                    if ch_id not in channels_dict:
+                        channels_dict[ch_id] = (channel, std_name if matched else None)
+                        channels_added += 1
             if channels_added > 0:
                 log(f"📺 源 {idx+1} 添加了 {channels_added} 个频道")
 
@@ -771,14 +844,22 @@ def run_epg_aggregate(epg_agg_id, auto=False):
 
     # 构建新的 XML
     new_root = ET.Element('tv')
-    # 先添加所有频道
-    for ch in channels_dict.values():
-        new_root.append(ch)
+    # 先添加所有频道（深拷贝并添加 display-name）
+    for ch_id, (ch_elem, std_name) in channels_dict.items():
+        # 深拷贝原始频道元素
+        new_ch = copy.deepcopy(ch_elem)
+        if std_name:
+            # 添加 display-name 元素（标准名）
+            dn = ET.SubElement(new_ch, 'display-name')
+            dn.text = std_name
+        new_root.append(new_ch)
+
     # 再添加所有节目
     for prog in programmes.values():
+        # 节目元素直接使用，无需深拷贝（因为我们未修改）
         new_root.append(prog)
 
-    # 生成 XML 文件（不生成 GZ）
+    # 生成 XML 文件
     update_ts = get_now()
     xml_path = os.path.join(OUTPUT_DIR, f"epg_{epg_agg_id}.xml")
     
@@ -788,7 +869,7 @@ def run_epg_aggregate(epg_agg_id, auto=False):
 
     log(f"💾 XML 已保存: {xml_path}")
 
-    # 记录状态（不再包含 GZ 文件）
+    # 记录状态
     epg_status = {
         "update_time": update_ts,
         "total": len(programmes),
@@ -896,6 +977,10 @@ def m3u_aggregate_page():
 @app.route('/epg_aggregate')
 def epg_aggregate_page():
     return render_template('epg_aggregate.html')
+
+@app.route('/pending')
+def pending_page():
+    return render_template('pending.html')
 
 @app.route('/api/sys_info')
 def sys_info():
@@ -1152,7 +1237,6 @@ def delete_epg_aggregate(epg_id):
     save_config(config)
     return jsonify({"status": "ok"})
 
-# ---------- EPG 文件路由 ----------
 @app.route('/epg/<epg_id>.xml')
 def get_epg_xml(epg_id):
     filename = f"epg_{epg_id}.xml"
@@ -1176,6 +1260,10 @@ def epg_check(epg_id):
             ch_id = ch.get('id', '')
             if channel.lower() in ch_id.lower():
                 channels.append(ch_id)
+            # 也检查 display-name
+            for dn in ch.findall('display-name'):
+                if channel.lower() in (dn.text or '').lower():
+                    channels.append(ch_id)
         # 查找匹配的节目
         programmes = []
         for prog in root.findall('programme'):
@@ -1189,11 +1277,69 @@ def epg_check(epg_id):
         return jsonify({
             "channel_exists": len(channels) > 0,
             "programme_count": len(programmes),
-            "matched_channels": channels,
+            "matched_channels": list(set(channels)),
             "matched_programmes_sample": programmes[:5]  # 只返回前5个作为示例
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# ---------- 待处理频道 API ----------
+@app.route('/api/pending', methods=['GET'])
+def get_pending():
+    pending = load_pending()
+    # 按出现次数降序排序
+    sorted_pending = sorted(pending.items(), key=lambda x: x[1]['count'], reverse=True)
+    return jsonify([{"name": k, **v} for k, v in sorted_pending])
+
+@app.route('/api/pending/ignore', methods=['POST'])
+def ignore_pending():
+    data = request.json
+    name = data.get('name')
+    if not name:
+        return jsonify({"error": "缺少频道名"}), 400
+    with pending_lock:
+        pending = load_pending()
+        if name in pending:
+            del pending[name]
+            save_pending(pending)
+    return jsonify({"status": "ok"})
+
+@app.route('/api/pending/set_alias', methods=['POST'])
+def set_alias():
+    data = request.json
+    raw_name = data.get('raw_name')
+    main_name = data.get('main_name')
+    aliases = data.get('aliases', [])
+    if not raw_name or not main_name:
+        return jsonify({"error": "缺少必要参数"}), 400
+    # 将 raw_name 作为别名之一加入
+    all_aliases = list(set([raw_name] + aliases))
+    # 追加到 alias.txt
+    append_alias(main_name, all_aliases)
+    # 从待处理列表中移除
+    with pending_lock:
+        pending = load_pending()
+        if raw_name in pending:
+            del pending[raw_name]
+            save_pending(pending)
+    return jsonify({"status": "ok"})
+
+@app.route('/api/pending/set_group', methods=['POST'])
+def set_group():
+    data = request.json
+    channel_name = data.get('channel_name')
+    group_name = data.get('group_name')
+    if not channel_name or not group_name:
+        return jsonify({"error": "缺少必要参数"}), 400
+    # 添加到 demo.txt
+    append_to_demo(channel_name, group_name)
+    # 从待处理列表中移除
+    with pending_lock:
+        pending = load_pending()
+        if channel_name in pending:
+            del pending[channel_name]
+            save_pending(pending)
+    return jsonify({"status": "ok"})
 
 # ---------- 启动时初始化调度 ----------
 with app.app_context():
