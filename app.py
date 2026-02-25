@@ -401,9 +401,44 @@ def add_pending_channel(raw_name, sub_id):
         session.commit()
 
 def append_alias(main_name, aliases):
-    with open(ALIAS_FILE, 'a', encoding='utf-8') as f:
-        line = f"{main_name}," + ",".join(aliases) + "\n"
-        f.write(line)
+    """向 alias.txt 添加别名规则：如果主名已存在，则合并别名（去重）到该行；否则追加新行。"""
+    with file_lock:
+        if not os.path.exists(ALIAS_FILE):
+            # 文件不存在，直接写入
+            with open(ALIAS_FILE, 'w', encoding='utf-8') as f:
+                f.write(f"{main_name}," + ",".join(aliases) + "\n")
+            global ALIAS_CACHE, ALIAS_MTIME
+            ALIAS_CACHE = None
+            ALIAS_MTIME = None
+            return
+
+        lines = []
+        found = False
+        with open(ALIAS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.rstrip('\n')
+                if not line or line.startswith('#'):
+                    lines.append(line)
+                    continue
+                parts = line.split(',')
+                current_main = parts[0].strip()
+                if current_main == main_name:
+                    # 合并现有别名和新别名
+                    existing_aliases = [a.strip() for a in parts[1:]]
+                    # 合并去重，保留顺序（现有在前，新加入在后）
+                    combined = existing_aliases + [a for a in aliases if a not in existing_aliases]
+                    new_line = main_name + "," + ",".join(combined)
+                    lines.append(new_line)
+                    found = True
+                else:
+                    lines.append(line)
+        if not found:
+            # 添加新行
+            lines.append(main_name + "," + ",".join(aliases))
+        # 写回文件
+        with open(ALIAS_FILE, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines) + "\n")
+    # 清除缓存，强制重新加载
     global ALIAS_CACHE, ALIAS_MTIME
     ALIAS_CACHE = None
     ALIAS_MTIME = None
