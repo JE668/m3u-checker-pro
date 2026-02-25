@@ -1440,6 +1440,22 @@ def get_channel_names():
                     names.add(line)
     return jsonify(sorted(names))
 
+@app.route('/api/alias/<main_name>')
+def get_aliases(main_name):
+    """返回指定标准名在 alias.txt 中的所有别名（不包括主名本身）"""
+    aliases = []
+    if os.path.exists(ALIAS_FILE):
+        with open(ALIAS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(',')
+                if parts and parts[0].strip() == main_name:
+                    aliases = [a.strip() for a in parts[1:] if a.strip()]
+                    break
+    return jsonify(aliases)
+
 @app.route('/api/pending/ignore', methods=['POST'])
 def ignore_pending():
     data = request.json
