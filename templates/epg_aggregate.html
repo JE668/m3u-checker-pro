@@ -56,7 +56,15 @@
         .btn-primary-grad { background: var(--primary-grad); }
         .btn-success-grad { background: var(--success-grad); }
         .btn-danger-grad { background: var(--danger-grad); }
-        .btn-secondary-custom { background: #64748b; color: white; }
+        .btn-secondary-custom {
+            background: #64748b;
+            color: white;
+        }
+        .btn-secondary-custom:hover {
+            background: #475569;
+            color: #ffffff;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+        }
         .link-item {
             display: flex;
             align-items: center;
@@ -155,7 +163,7 @@
         </div>
     </div>
 
-    <!-- 编辑模态框（保持不变） -->
+    <!-- 编辑模态框 -->
     <div class="modal fade" id="editModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4" style="border-radius: 35px; background: var(--glass); backdrop-filter: blur(15px);">
@@ -206,7 +214,7 @@
         </div>
     </div>
 
-    <!-- 检查模态框（修复版） -->
+    <!-- 检查模态框 -->
     <div class="modal fade" id="checkModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4" style="border-radius: 35px;">
@@ -231,9 +239,8 @@
     <script>
         let epgAggregates = [];
         let currentCheckEpgId = null;
-        let logRefreshTimer = null;  // 日志刷新定时器
+        let logRefreshTimer = null;
 
-        // 实例化模态框
         const editModal = new bootstrap.Modal(document.getElementById('editModal'));
         const logModal = new bootstrap.Modal(document.getElementById('logModal'));
         const checkModal = new bootstrap.Modal(document.getElementById('checkModal'));
@@ -332,7 +339,6 @@
                 const logs = data.logs || [];
                 const logContent = document.getElementById('logContent');
                 logContent.innerHTML = logs.length ? logs.join('\n') : '暂无日志';
-                // 自动滚动到底部
                 logContent.scrollTop = logContent.scrollHeight;
             } catch (e) {
                 console.error('刷新日志失败', e);
@@ -340,16 +346,12 @@
         }
 
         function showLog(epgId) {
-            // 清除之前的定时器
             if (logRefreshTimer) {
                 clearInterval(logRefreshTimer);
                 logRefreshTimer = null;
             }
-            // 先加载一次
             refreshLog(epgId);
-            // 启动定时器每3秒刷新一次
             logRefreshTimer = setInterval(() => refreshLog(epgId), 3000);
-            // 监听模态框隐藏事件，清除定时器
             const modalEl = document.getElementById('logModal');
             modalEl.addEventListener('hidden.bs.modal', function () {
                 if (logRefreshTimer) {
@@ -415,7 +417,6 @@
         async function runEpgAggregate(id) {
             await fetch('/api/epg_aggregate/run/' + id);
             alert('EPG聚合任务已启动');
-            // 延迟2秒后刷新列表，确保状态文件已生成
             setTimeout(() => loadData(), 2000);
         }
 
