@@ -122,7 +122,7 @@
         </div>
     </div>
 
-    <!-- 设置分组模态框（增强版：支持选择现有分组或新建） -->
+    <!-- 设置分组模态框（增强版） -->
     <div class="modal fade" id="groupModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4" style="border-radius: 35px;">
@@ -136,7 +136,6 @@
                     <label class="fw-bold small text-muted">选择现有分组</label>
                     <select id="groupSelect" class="form-select bg-light border-0 rounded-3">
                         <option value="">请选择分组</option>
-                        <!-- 动态加载 -->
                     </select>
                 </div>
                 <div class="mb-3">
@@ -155,21 +154,51 @@
     <script>
         const aliasModal = new bootstrap.Modal(document.getElementById('aliasModal'));
         const groupModal = new bootstrap.Modal(document.getElementById('groupModal'));
-        let groups = []; // 存储现有分组
+        let groups = [];
+        let subs = [];
+
+        // 加载分组列表
+        async function loadGroups() {
+            const res = await fetch('/api/groups');
+            groups = await res.json();
+            const select = document.getElementById('groupSelect');
+            select.innerHTML = '<option value="">请选择分组</option>';
+            groups.forEach(g => {
+                const option = document.createElement('option');
+                option.value = g;
+                option.textContent = g;
+                select.appendChild(option);
+            });
+        }
+
+        // 加载订阅列表
+        async function loadSubs() {
+            const res = await fetch('/api/subs');
+            const data = await res.json();
+            subs = data.subs;
+        }
+
+        // 获取订阅名称
+        function getSubName(id) {
+            const sub = subs.find(s => s.id === id);
+            return sub ? sub.name : id;
+        }
 
         async function loadPending() {
             const res = await fetch('/api/pending');
-            const data = await res.json();
+            let data = await res.json();
+            // 按频道名称排序（忽略大小写）
+            data.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { sensitivity: 'base' }));
             const tbody = document.getElementById('pendingList');
             tbody.innerHTML = '';
             data.forEach(item => {
-                const subIds = item.sub_ids.join(', ');
+                const subNames = (item.sub_ids || []).map(id => getSubName(id)).join(', ');
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td><span class="fw-bold">${item.name}</span></td>
                     <td><span class="badge-count">${item.count}</span></td>
                     <td>${item.first_seen}</td>
-                    <td><small class="text-muted">${subIds}</small></td>
+                    <td><small class="text-muted">${subNames}</small></td>
                     <td>
                         <button class="btn btn-sm btn-outline-primary me-1" onclick="openAlias('${item.name}')"><i class="bi bi-tag"></i> 别名</button>
                         <button class="btn btn-sm btn-outline-success me-1" onclick="openGroup('${item.name}')"><i class="bi bi-folder"></i> 分组</button>
@@ -178,12 +207,6 @@
                 `;
                 tbody.appendChild(tr);
             });
-        }
-
-        // 加载分组列表
-        async function loadGroups() {
-            const res = await fetch('/api/groups');
-            groups = await res.json();
         }
 
         function openAlias(name) {
@@ -216,15 +239,6 @@
             document.getElementById('groupChannelName').value = name;
             document.getElementById('groupChannelDisplay').value = name;
             document.getElementById('groupNew').value = '';
-            // 填充下拉框
-            const select = document.getElementById('groupSelect');
-            select.innerHTML = '<option value="">请选择分组</option>';
-            groups.forEach(g => {
-                const option = document.createElement('option');
-                option.value = g;
-                option.textContent = g;
-                select.appendChild(option);
-            });
             groupModal.show();
         }
 
@@ -260,9 +274,10 @@
             loadPending();
         }
 
-        // 初始化
+        // 初始化：先加载分组和订阅，再加载待处理列表
         window.onload = async () => {
             await loadGroups();
+            await loadSubs();
             await loadPending();
         };
     </script>
