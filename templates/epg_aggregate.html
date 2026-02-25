@@ -245,7 +245,8 @@
         function showLinks(epgId) {
             const baseUrl = window.location.origin;
             document.getElementById('epgXmlLink').value = `${baseUrl}/epg/${epgId}.xml`;
-            document.getElementById('epgGzLink').value = `${baseUrl}/epg/${epgId}.gz`;
+            // 修改为 .xml.gz 格式
+            document.getElementById('epgGzLink').value = `${baseUrl}/epg/${epgId}.xml.gz`;
             document.getElementById('linksPanel').style.display = 'block';
         }
 
