@@ -78,7 +78,7 @@
         </div>
 
         <div class="glass-card">
-            <p class="text-muted mb-3">以下是在探测过程中发现的未匹配任何别名的原始频道名。您可以为它们设置别名（映射到现有标准名或新建标准名），或直接添加到 demo.txt 的分组中。</p>
+            <p class="text-muted mb-3">以下是在探测过程中发现的未匹配任何别名的原始频道名。您可以为它们设置别名和分组，一次完成。</p>
             <div class="table-responsive">
                 <table class="table table-hover align-middle">
                     <thead>
@@ -96,56 +96,38 @@
         </div>
     </div>
 
-    <!-- 设置别名模态框（增强版：自动加载别名） -->
-    <div class="modal fade" id="aliasModal" tabindex="-1">
+    <!-- 编辑模态框（合并别名和分组） -->
+    <div class="modal fade" id="editModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4" style="border-radius: 35px;">
-                <h5 class="fw-800 mb-4 text-center">设置别名</h5>
-                <input type="hidden" id="aliasRawName">
+                <h5 class="fw-800 mb-4 text-center">编辑待处理频道</h5>
+                <input type="hidden" id="editRawName">
                 <div class="mb-3">
                     <label class="fw-bold small text-muted">原始频道名</label>
-                    <input type="text" id="aliasRawNameDisplay" class="form-control bg-light" readonly>
+                    <input type="text" id="editRawNameDisplay" class="form-control bg-light" readonly>
                 </div>
                 <div class="mb-3">
-                    <label class="fw-bold small text-muted">标准名</label>
-                    <input type="text" id="aliasMainName" class="form-control bg-light border-0 rounded-3" placeholder="例如: CCTV-1" list="channelNamesList" autocomplete="off">
+                    <label class="fw-bold small text-muted">标准名（可选，用于设置别名）</label>
+                    <input type="text" id="editMainName" class="form-control bg-light border-0 rounded-3" placeholder="例如: CCTV-1" list="channelNamesList" autocomplete="off">
                     <datalist id="channelNamesList"></datalist>
                 </div>
                 <div class="mb-3">
-                    <label class="fw-bold small text-muted">额外别名（逗号分隔）</label>
-                    <input type="text" id="aliasExtra" class="form-control bg-light border-0 rounded-3" placeholder="别名1,别名2">
-                </div>
-                <div class="d-flex justify-content-end gap-2">
-                    <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-                    <button class="btn btn-grad btn-primary-grad" id="saveAliasBtn">保存</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 设置分组模态框（保持不变） -->
-    <div class="modal fade" id="groupModal" tabindex="-1">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content p-4" style="border-radius: 35px;">
-                <h5 class="fw-800 mb-4 text-center">添加到分组</h5>
-                <input type="hidden" id="groupChannelName">
-                <div class="mb-3">
-                    <label class="fw-bold small text-muted">频道名</label>
-                    <input type="text" id="groupChannelDisplay" class="form-control bg-light" readonly>
+                    <label class="fw-bold small text-muted">额外别名（逗号分隔，可选）</label>
+                    <input type="text" id="editExtra" class="form-control bg-light border-0 rounded-3" placeholder="别名1,别名2">
                 </div>
                 <div class="mb-3">
-                    <label class="fw-bold small text-muted">选择现有分组</label>
-                    <select id="groupSelect" class="form-select bg-light border-0 rounded-3">
+                    <label class="fw-bold small text-muted">选择现有分组（可选）</label>
+                    <select id="editGroupSelect" class="form-select bg-light border-0 rounded-3">
                         <option value="">请选择分组</option>
                     </select>
                 </div>
                 <div class="mb-3">
-                    <label class="fw-bold small text-muted">或输入新分组名称</label>
-                    <input type="text" id="groupNew" class="form-control bg-light border-0 rounded-3" placeholder="输入新分组名称">
+                    <label class="fw-bold small text-muted">或输入新分组名称（可选）</label>
+                    <input type="text" id="editGroupNew" class="form-control bg-light border-0 rounded-3" placeholder="输入新分组名称">
                 </div>
                 <div class="d-flex justify-content-end gap-2">
                     <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-                    <button class="btn btn-grad btn-primary-grad" id="saveGroupBtn">保存</button>
+                    <button class="btn btn-grad btn-primary-grad" id="saveEditBtn">保存</button>
                 </div>
             </div>
         </div>
@@ -153,18 +135,17 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        const aliasModal = new bootstrap.Modal(document.getElementById('aliasModal'));
-        const groupModal = new bootstrap.Modal(document.getElementById('groupModal'));
+        const editModal = new bootstrap.Modal(document.getElementById('editModal'));
         let groups = [];
         let subs = [];
+        let currentRawName = null;
 
         // 防抖函数
         function debounce(func, wait) {
             let timeout;
             return function(...args) {
-                const context = this;
                 clearTimeout(timeout);
-                timeout = setTimeout(() => func.apply(context, args), wait);
+                timeout = setTimeout(() => func.apply(this, args), wait);
             };
         }
 
@@ -172,7 +153,7 @@
         async function loadGroups() {
             const res = await fetch('/api/groups');
             groups = await res.json();
-            const select = document.getElementById('groupSelect');
+            const select = document.getElementById('editGroupSelect');
             select.innerHTML = '<option value="">请选择分组</option>';
             groups.forEach(g => {
                 const option = document.createElement('option');
@@ -223,8 +204,7 @@
                     <td>${item.first_seen}</td>
                     <td><small class="text-muted">${subNames}</small></td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary me-1" onclick="openAlias('${item.name}')"><i class="bi bi-tag"></i> 别名</button>
-                        <button class="btn btn-sm btn-outline-success me-1" onclick="openGroup('${item.name}')"><i class="bi bi-folder"></i> 分组</button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="openEdit('${item.name}')"><i class="bi bi-pencil"></i> 编辑</button>
                         <button class="btn btn-sm btn-outline-danger" onclick="ignore('${item.name}')"><i class="bi bi-x-circle"></i> 忽略</button>
                     </td>
                 `;
@@ -232,20 +212,19 @@
             });
         }
 
-        // 打开别名模态框
-        function openAlias(name) {
-            document.getElementById('aliasRawName').value = name;
-            document.getElementById('aliasRawNameDisplay').value = name;
-            document.getElementById('aliasMainName').value = '';
-            document.getElementById('aliasExtra').value = '';
-            
-            // 移除之前可能绑定的事件，避免多个监听器
-            const mainNameInput = document.getElementById('aliasMainName');
+        // 打开编辑模态框
+        function openEdit(name) {
+            currentRawName = name;
+            document.getElementById('editRawName').value = name;
+            document.getElementById('editRawNameDisplay').value = name;
+            document.getElementById('editMainName').value = '';
+            document.getElementById('editExtra').value = '';
+            document.getElementById('editGroupNew').value = '';
+            // 移除之前的事件监听
+            const mainNameInput = document.getElementById('editMainName');
             mainNameInput.removeEventListener('input', aliasInputHandler);
-            // 添加新的事件
             mainNameInput.addEventListener('input', aliasInputHandler);
-            
-            aliasModal.show();
+            editModal.show();
         }
 
         // 别名输入事件处理器（防抖）
@@ -256,63 +235,53 @@
                 const res = await fetch(`/api/alias/${encodeURIComponent(mainName)}`);
                 if (!res.ok) return;
                 const aliases = await res.json();
-                // 将别名数组用逗号连接，填充到额外别名输入框
-                const extraInput = document.getElementById('aliasExtra');
-                extraInput.value = aliases.join(', ');
+                document.getElementById('editExtra').value = aliases.join(', ');
             } catch (err) {
                 console.error('加载别名失败', err);
             }
-        }, 500); // 500ms 防抖
+        }, 500);
 
-        // 保存别名
-        document.getElementById('saveAliasBtn').onclick = async () => {
-            const rawName = document.getElementById('aliasRawName').value;
-            const mainName = document.getElementById('aliasMainName').value.trim();
-            const extra = document.getElementById('aliasExtra').value.trim();
-            if (!mainName) {
-                alert('请输入标准名');
+        // 保存编辑
+        document.getElementById('saveEditBtn').onclick = async () => {
+            const rawName = currentRawName;
+            const mainName = document.getElementById('editMainName').value.trim();
+            const extra = document.getElementById('editExtra').value.trim();
+            const select = document.getElementById('editGroupSelect');
+            const newGroup = document.getElementById('editGroupNew').value.trim();
+
+            // 至少提供一项操作
+            if (!mainName && !extra && !select.value && !newGroup) {
+                alert('请至少填写标准名/别名或选择/输入分组');
                 return;
             }
+
             const aliases = extra ? extra.split(',').map(s => s.trim()).filter(s => s) : [];
-            await fetch('/api/pending/set_alias', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({raw_name: rawName, main_name: mainName, aliases: aliases})
-            });
-            aliasModal.hide();
-            loadPending();
-        };
-
-        // 打开分组模态框
-        function openGroup(name) {
-            document.getElementById('groupChannelName').value = name;
-            document.getElementById('groupChannelDisplay').value = name;
-            document.getElementById('groupNew').value = '';
-            groupModal.show();
-        }
-
-        // 保存分组
-        document.getElementById('saveGroupBtn').onclick = async () => {
-            const channelName = document.getElementById('groupChannelName').value;
-            const select = document.getElementById('groupSelect');
-            const newGroup = document.getElementById('groupNew').value.trim();
-            let groupName;
+            let groupName = null;
             if (newGroup) {
                 groupName = newGroup;
             } else if (select.value) {
                 groupName = select.value;
-            } else {
-                alert('请选择现有分组或输入新分组名称');
-                return;
             }
-            await fetch('/api/pending/set_group', {
+
+            // 调用合并API
+            const response = await fetch('/api/pending/process', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({channel_name: channelName, group_name: groupName})
+                body: JSON.stringify({
+                    raw_name: rawName,
+                    main_name: mainName || null,
+                    aliases: aliases,
+                    group_name: groupName
+                })
             });
-            await loadGroups();  // 刷新分组列表
-            groupModal.hide();
-            loadPending();
+            const result = await response.json();
+            if (result.status === 'ok') {
+                editModal.hide();
+                await loadGroups(); // 刷新分组列表，因为可能添加了新分组
+                await loadPending();
+            } else {
+                alert('保存失败：' + (result.error || '未知错误'));
+            }
         };
 
         // 忽略
